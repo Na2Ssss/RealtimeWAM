@@ -238,8 +238,11 @@ class VideoAdapter(View):
             query, k, v, mask, cross.num_heads, tail=getattr(cross, "_inference_attention_tail", False)
         )
         cross_output = cross.o(context_output)
+        positions = state.extras.get("token_gather") if layer_id > 0 else None
+        rows = state.extras["token_indices"].numel() if positions is not None else 0
         x, normalized = modulated_norm(
-            x, cross_output, block.modulation, None, state.time_mod, None, None, CROSS_RESIDUAL, block.norm2.eps
+            x, cross_output, block.modulation, None, state.time_mod, None, None, CROSS_RESIDUAL, block.norm2.eps,
+            positions, rows,
         )
         return normalized, x
 
@@ -247,8 +250,6 @@ class VideoAdapter(View):
         block = self.dit.blocks[layer_id]
         reuse = state.extras.get("token_reuse") if layer_id > 0 else None
         indices = state.extras.get("token_indices") if reuse is not None else None
-        if indices is not None:
-            normalized = normalized.index_select(1, indices)
         if self.ffn is not None:
             output = self.ffn.forward(layer_id, normalized)
         else:
@@ -257,10 +258,11 @@ class VideoAdapter(View):
             output = block.ffn[1](output)
             output = block.ffn[2](output).reshape_as(normalized)
         if reuse is not None:
-            n, count = reuse["n"], reuse["count"]
+            n = reuse["n"]
             if indices is not None:
-                clean = reuse["cache"][layer_id - 1].index_copy(1, indices[:count], output[:, :count])
-                output = torch.cat((clean, output[:, count:]), dim=1)
+                output = torch.cat((reuse["cache"][layer_id - 1], output), dim=1).index_select(
+                    1, state.extras["token_restore"]
+                )
             state.extras["token_outputs"].append(output[:, :n].contiguous())
         if layer_id == self.num_layers - 1:
             modulation = block.modulation + state.time_mod

@@ -64,7 +64,12 @@ def select_tokens(state, features):
         score = score.squeeze(0).masked_fill(reuse["mandatory"], float("inf"))
         selected = torch.argsort(score, descending=True, stable=True)[:count].sort().values
         future = torch.arange(n, features.shape[1], device=features.device)
-        state.extras["token_indices"] = torch.cat((selected, future))
+        indices = torch.cat((selected, future))
+        state.extras["token_indices"] = indices
+        state.extras["token_restore"] = torch.arange(features.shape[1], device=features.device).scatter(
+            0, indices, n + torch.arange(indices.numel(), device=features.device)
+        )
+        state.extras["token_gather"] = state.extras["token_restore"] - n
 
 
 class MotionRefinement:

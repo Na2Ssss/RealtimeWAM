@@ -65,22 +65,24 @@ These are results of the full paper framework. The current public release provid
 <details>
 <summary><b>Runtime: paired latency measurements and numerical validation</b></summary>
 
-**RTX 4090, 48 GiB · BF16 · 384×320 · 9 video frames · 32 actions · 10 Euler updates.** The latest optimization reduces RGB-selection allocations and cache-copy calls. **Both columns enable token reuse:** before is v0.2.0 (`afdb28e`), after is current `main`. Each row contains 40 alternating before/after pairs with shared weights and fixed FFN algorithms.
+**RTX 4090, 48 GiB · BF16 · 384×320 · 9 video frames · 32 actions · 10 Euler updates.** The latest optimization writes selected FFN inputs directly from normalization and fuses cache reconstruction using one position map per request. **Both columns enable token reuse:** before is `9c537c2`, after is current `main`. Each row contains 80 alternating before/after pairs with shared weights, fixed FFN algorithms, four CPU threads and CPU affinity 0–7.
 
 | Input sequence | Transformer evaluations | Before | After |
 | --- | --- | ---: | ---: |
-| Repeated observation | Forced 2F | 55.35 ms | **54.89 ms** |
-| Repeated observation | Forced 4F | 94.17 ms | **93.82 ms** |
-| Repeated observation | 10F | 212.83 ms | **212.38 ms** |
-| Changing observation | Forced 2F | 55.45 ms | **55.03 ms** |
-| Changing observation | Forced 4F | 94.74 ms | **94.30 ms** |
-| Changing observation | 10F | 215.06 ms | **214.68 ms** |
+| Repeated observation | Forced 2F | 54.58 ms | 54.16 ms |
+| Repeated observation | Forced 4F | 94.42 ms | 94.14 ms |
+| Repeated observation | 10F | 214.90 ms | 214.65 ms |
+| Changing observation | Forced 2F | 55.04 ms | 54.82 ms |
+| Changing observation | Forced 4F | 95.02 ms | 94.61 ms |
+| Changing observation | 10F | 215.44 ms | 215.24 ms |
 
-Timing covers CPU image/state inputs through denormalized CPU actions, including preprocessing and pending cache copies; loading, compilation/capture, video decoding and networking are excluded. The text cache is warm. Changing inputs alternate a synthetic change in one RGB tile, retaining the 32/120 refresh capacity. The motion callback is forced to 0.10 m or 0.01 m. These are modest incremental savings of **0.35–0.46 ms**, not closed-loop rollout measurements.
+Timing covers CPU image/state inputs through denormalized CPU actions, including preprocessing and pending cache copies; loading, compilation/capture, video decoding and networking are excluded. The text cache is warm. Changing inputs alternate a synthetic change in one RGB tile, retaining the 32/120 refresh capacity. The motion callback is forced to 0.10 m or 0.01 m. Mean incremental savings are **0.20–0.42 ms**, with 84 fewer GPU kernels in the first forward. Five of six paired bootstrap intervals favor the candidate; changing-observation 2F remains inconclusive (after − before: −0.44 to +0.08 ms). These are offline measurements, with unlocked GPU clocks and resident background applications.
 
-**24 tests passed on each of A100 and RTX 4090.** All 240 paired action outputs matched the previous implementation exactly. Another 63 full-checkpoint comparisons also matched first-layer features and every FFN cache, covering all four refresh capacities, prompt changes and resets. On small upstream-layer fixtures, 24 action/video-latent pairs matched exactly. The switches retain their existing approximation; this optimization does not establish equality with native OpenWAM or task-level accuracy.
+**25 tests passed on each of A100 and RTX 4090.** All **720 paired action outputs** across the initial and confirmation runs matched the previous implementation exactly. Another 63 full-checkpoint comparisons also matched first-layer features and every FFN cache, covering all four refresh capacities, prompt changes and resets. On small upstream-layer fixtures, 24 action/video-latent pairs matched exactly. The switches retain their existing approximation; this optimization does not establish equality with native OpenWAM or task-level accuracy.
 
-See [paired samples, configurations and checks](evidence/token-reuse-optimization.json), the [historical v0.2.0 switch measurements](evidence/switches.json), and [validation records](VALIDATION.md). The historical switch timings were grouped sequentially and do not establish a stable token-reuse slowdown. Checkpoints, request fixtures and the complete historical audit data are not bundled.
+**Why the incremental gain is small.** At 32/120 observation refresh, 240 future-video rows still run: the eligible FFN shape shrinks from 360 to 272 rows. Attention and current residual gates remain fully computed. Profiling the previous runtime attributes about 13.65 → 11.69 ms of first-forward GPU kernel time to FFN GEMMs with reuse off/on; feature scoring and sorting take only about 0.008 ms. These kernel timings are diagnostics, not end-to-end latency or a reproduction of the paper's 37.12 → 31.62 ms closed-loop first-forward result.
+
+See [paired samples, profiles and checks](evidence/token-reuse-ffn-fusion.json), the [previous cache-transfer optimization](evidence/token-reuse-optimization.json), and [validation records](VALIDATION.md). The [historical v0.2.0 switch timings](evidence/switches.json) were grouped sequentially and do not establish a stable token-reuse slowdown. Checkpoints, request fixtures and complete traces are not bundled.
 
 </details>
 

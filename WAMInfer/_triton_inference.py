@@ -138,11 +138,13 @@ def _modulated_norm(
     BIAS,
     Y,
     NORM,
+    POSITIONS,
     H: tl.constexpr,
     XS: tl.constexpr,
     US: tl.constexpr,
     TS: tl.constexpr,
     MODE: tl.constexpr,
+    GATHER: tl.constexpr,
     EPS: tl.constexpr,
     BLOCK: tl.constexpr,
 ):
@@ -159,24 +161,26 @@ def _modulated_norm(
             gate = _modulation(PREVIOUS, TIME, row, d, 5, H, TS)
             update = (gate * update).to(tl.bfloat16).to(tl.float32)
         x = (x + update).to(tl.bfloat16).to(tl.float32)
-    centered = x - tl.sum(x, 0) / H
-    variance = tl.sum(tl.where(valid, centered * centered, 0.0), 0) / H
-    normalized = centered * tl.rsqrt(variance + EPS)
-    if MODE == 1:
-        weight = tl.load(W + d, valid, 0).to(tl.float32)
-        bias = tl.load(BIAS + d, valid, 0).to(tl.float32)
-        normalized = normalized * weight + bias
-    else:
-        normalized = normalized.to(tl.bfloat16).to(tl.float32)
-        shift = _modulation(MOD, TIME, row, d, 3 if MODE == 2 else 0, H, TS)
-        scale = _modulation(MOD, TIME, row, d, 4 if MODE == 2 else 1, H, TS)
-        scale = (1.0 + scale).to(tl.bfloat16).to(tl.float32)
-        normalized = (normalized * scale).to(tl.bfloat16).to(tl.float32) + shift
     tl.store(Y + row * H + d, x, valid)
-    tl.store(NORM + row * H + d, normalized, valid)
+    target = tl.load(POSITIONS + row) if GATHER else row
+    if target >= 0:
+        centered = x - tl.sum(x, 0) / H
+        variance = tl.sum(tl.where(valid, centered * centered, 0.0), 0) / H
+        normalized = centered * tl.rsqrt(variance + EPS)
+        if MODE == 1:
+            weight = tl.load(W + d, valid, 0).to(tl.float32)
+            bias = tl.load(BIAS + d, valid, 0).to(tl.float32)
+            normalized = normalized * weight + bias
+        else:
+            normalized = normalized.to(tl.bfloat16).to(tl.float32)
+            shift = _modulation(MOD, TIME, row, d, 3 if MODE == 2 else 0, H, TS)
+            scale = _modulation(MOD, TIME, row, d, 4 if MODE == 2 else 1, H, TS)
+            scale = (1.0 + scale).to(tl.bfloat16).to(tl.float32)
+            normalized = (normalized * scale).to(tl.bfloat16).to(tl.float32) + shift
+        tl.store(NORM + target * H + d, normalized, valid)
 
 
-@torch.library.triton_op("wam_infer::modulated_norm", mutates_args={})
+@torch.library.triton_op("wam_infer::modulated_norm_v2", mutates_args={})
 def modulated_norm(
     x: torch.Tensor,
     update: torch.Tensor | None,
@@ -187,6 +191,8 @@ def modulated_norm(
     bias: torch.Tensor | None,
     mode: int,
     eps: float,
+    positions: torch.Tensor | None = None,
+    selected_rows: int = 0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return the updated residual and the normalized input to the next GEMM.
 
@@ -196,7 +202,7 @@ def modulated_norm(
     """
     y, norm = (
         torch.empty(x.shape, dtype=x.dtype, device=x.device),
-        torch.empty(x.shape, dtype=x.dtype, device=x.device),
+        torch.empty((x.shape[0], selected_rows or x.shape[1], x.shape[2]), dtype=x.dtype, device=x.device),
     )
     torch.library.wrap_triton(_modulated_norm)[(x.shape[1],)](
         x,
@@ -208,11 +214,13 @@ def modulated_norm(
         bias,
         y,
         norm,
+        positions,
         x.shape[-1],
         x.stride(1),
         0 if update is None else update.stride(1),
         time.stride(1) if time.ndim == 4 and time.shape[1] != 1 else 0,
         mode,
+        positions is not None,
         eps,
         triton.next_power_of_2(x.shape[-1]),
         num_warps=4,

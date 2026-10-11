@@ -25,6 +25,7 @@ def test_capacity_and_feature_selection():
     current[:, 2:4] = 5  # Equal scores: smaller spatial index wins.
     select_tokens(state, current)
     assert state.extras["token_indices"].tolist() == [1, 2, *range(4, 12)]
+    assert state.extras["token_restore"].tolist() == [0, 4, 5, 3, *range(6, 14)]
     torch.testing.assert_close(history.features, previous)
     assert history.begin(image, inputs, "new task", (1, 2, 2))[0]["count"] == 4
 
@@ -90,13 +91,15 @@ def test_reuse_executes_compact_ffn_with_current_gates():
     normalized = torch.randn_like(x)
     old = torch.randn(1, n, dim, device="cuda", dtype=torch.bfloat16)
     indices = torch.tensor([0, 3, *range(n, length)], device="cuda")
+    restore = torch.arange(length, device="cuda").scatter(0, indices, n + torch.arange(indices.numel(), device="cuda"))
     state = SimpleNamespace(
         time_mod=torch.randn(1, length, 6, dim, device="cuda", dtype=x.dtype),
-        extras=dict(token_reuse=dict(n=n, count=count, cache=(old,)), token_indices=indices, token_outputs=[]),
+        extras=dict(token_reuse=dict(n=n, count=count, cache=(old,)), token_indices=indices,
+                    token_restore=restore, token_outputs=[]),
     )
     rows = []
     hook = vb.dit.blocks[1].ffn[0].register_forward_pre_hook(lambda module, args: rows.append(args[0].shape[0]))
-    vb.ffn_at_layer_for_compile(1, state, normalized, x)
+    vb.ffn_at_layer_for_compile(1, state, normalized.index_select(1, indices), x)
     hook.remove()
     assert rows == [length - n + count]
     clean = state.extras["token_outputs"][0]
@@ -232,3 +235,26 @@ def test_switches_graph_replay_and_history(monkeypatch, reuse_tokens, adaptive):
         changed = fast._forward_impl(args[0] + 1, **kwargs)
         assert not torch.equal(changed[1], actual[1])
     fast.close()
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@torch.no_grad()
+def test_compact_normalization_preserves_residual_and_selected_rows():
+    from WAMInfer._triton_inference import CROSS_RESIDUAL, modulated_norm
+
+    x = torch.randn(1, 360, 3072, device="cuda", dtype=torch.bfloat16)
+    update = torch.randn_like(x)
+    modulation = torch.randn(1, 6, 3072, device="cuda", dtype=x.dtype)
+    time = torch.randn(1, 360, 6, 3072, device="cuda", dtype=x.dtype)
+    args = (x, update, modulation, None, time, None, None, CROSS_RESIDUAL, 1e-6)
+    residual, normalized = modulated_norm(*args)
+    for count in (32, 64, 96, 120):
+        indices = torch.cat((torch.randperm(120, device="cuda")[:count].sort().values,
+                             torch.arange(120, 360, device="cuda")))
+        positions = torch.full((360,), -1, device="cuda").scatter(
+            0, indices, torch.arange(indices.numel(), device="cuda")
+        )
+        actual_residual, compact = modulated_norm(*args, positions, indices.numel())
+        assert torch.equal(actual_residual, residual)
+        assert torch.equal(compact, normalized.index_select(1, indices))
