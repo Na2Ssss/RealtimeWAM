@@ -10,7 +10,7 @@ import numpy as np
 from PIL import Image
 import torch
 
-from WAMInfer import OpenWAM
+from realtimewam import OpenWAM
 
 
 def main():

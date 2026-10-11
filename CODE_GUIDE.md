@@ -10,25 +10,25 @@
 
 | 文件 | 行数 | 负责的事情 | 先看哪里 |
 | --- | ---: | --- | --- |
-| [`runtime.py`](WAMInfer/runtime.py) | 407 | 接口、采样循环、准备与释放资源 | `OpenWAM.generate`、`Runtime._generate` |
-| [`preparation.py`](WAMInfer/preparation.py) | 214 | 图像/文本准备、条件 K/V、时间调制、当前帧 prefill | `prepare_inputs`、`ConditioningPreparation` |
-| [`blocks.py`](WAMInfer/blocks.py) | 292 | 适配原模型，将每层拆成可调度的阶段 | `View`、两个 Adapter |
-| [`approximation.py`](WAMInfer/approximation.py) | 92 | token 预算与历史、运动自适应决策 | `TokenReuse`、`MotionRefinement` |
-| [`joint.py`](WAMInfer/joint.py) | 165 | Video/Action 双 stream 调度、联合 attention | `ParallelJointLoop._run` |
-| [`graphs.py`](WAMInfer/graphs.py) | 257 | CUDA Graph、输入刷新、文本和 VAE 执行 | `CudaGraphForward._replay` |
-| [`ffn.py`](WAMInfer/ffn.py) | 118 | 准备 FFN 权重布局和 cuBLASLt 执行计划 | `PreparedFFN.prepare/forward` |
-| [`_triton_inference.py`](WAMInfer/_triton_inference.py) | 229 | 融合归一化、调制、残差和 RoPE | `_modulated_norm`、`_qk_rms_rope_kernel` |
-| [`_triton_attention.py`](WAMInfer/_triton_attention.py) | 484 | 不同 mask/缓存布局的 attention kernel | `_attention_kernel`、`_split_attention_kernel` |
-| [`__init__.py`](WAMInfer/__init__.py) | 5 | 导出 `OpenWAM` 和 `accelerate` | 整个文件 |
+| [`runtime.py`](realtimewam/runtime.py) | 407 | 接口、采样循环、准备与释放资源 | `OpenWAM.generate`、`Runtime._generate` |
+| [`preparation.py`](realtimewam/preparation.py) | 214 | 图像/文本准备、条件 K/V、时间调制、当前帧 prefill | `prepare_inputs`、`ConditioningPreparation` |
+| [`blocks.py`](realtimewam/blocks.py) | 292 | 适配原模型，将每层拆成可调度的阶段 | `View`、两个 Adapter |
+| [`approximation.py`](realtimewam/approximation.py) | 92 | token 预算与历史、运动自适应决策 | `TokenReuse`、`MotionRefinement` |
+| [`joint.py`](realtimewam/joint.py) | 165 | Video/Action 双 stream 调度、联合 attention | `ParallelJointLoop._run` |
+| [`graphs.py`](realtimewam/graphs.py) | 257 | CUDA Graph、输入刷新、文本和 VAE 执行 | `CudaGraphForward._replay` |
+| [`ffn.py`](realtimewam/ffn.py) | 118 | 准备 FFN 权重布局和 cuBLASLt 执行计划 | `PreparedFFN.prepare/forward` |
+| [`_triton_inference.py`](realtimewam/_triton_inference.py) | 229 | 融合归一化、调制、残差和 RoPE | `_modulated_norm`、`_qk_rms_rope_kernel` |
+| [`_triton_attention.py`](realtimewam/_triton_attention.py) | 484 | 不同 mask/缓存布局的 attention kernel | `_attention_kernel`、`_split_attention_kernel` |
+| [`__init__.py`](realtimewam/__init__.py) | 5 | 导出 `OpenWAM` 和 `accelerate` | 整个文件 |
 | **核心 Python 合计** | **2263** | 包括注释和空行 | |
 
 另外还有 `_cublaslt_inference.cpp` 197 行、`_inference_guards.cpp` 214 行。benchmark 和测试不计入核心行数。两个开关及后续缓存优化相对 v0.1.0 净增 242 行核心 Python，只增加一个实现文件。
 
 ## 1. 入口：接入原模型
 
-[`OpenWAM.__init__`](WAMInfer/runtime.py) 调用原库加载 checkpoint，将原 architecture 保存到 `original`，再创建 `Runtime(original)`。
+[`OpenWAM.__init__`](realtimewam/runtime.py) 调用原库加载 checkpoint，将原 architecture 保存到 `original`，再创建 `Runtime(original)`。
 
-`Runtime`、`VideoAdapter`、`ActionAdapter` 通过 [`View`](WAMInfer/blocks.py) 访问原对象：本地没有的属性转发给 `_native`。因此模型的 block、层参数和 scheduler 继续来自原模型；外接层会额外建立打包权重、缓存和工作空间，但没有另造一套模型定义。
+`Runtime`、`VideoAdapter`、`ActionAdapter` 通过 [`View`](realtimewam/blocks.py) 访问原对象：本地没有的属性转发给 `_native`。因此模型的 block、层参数和 scheduler 继续来自原模型；外接层会额外建立打包权重、缓存和工作空间，但没有另造一套模型定义。
 
 `OpenWAM.generate` 负责方便调用：构造原生同步 schedule、归一化 proprio，交给 `Runtime.generate`。后者用锁保证同一个 runtime 的请求顺序执行，因为静态 Graph 输入和 FFN 工作空间会被复用。
 
@@ -49,7 +49,7 @@ flowchart TD
 
 ## 2. 准备：把不随去噪步变化的工作提前做
 
-[`prepare_inputs`](WAMInfer/preparation.py) 准备图像 latent、文本 embedding 和初始视频噪声。图像 VAE 编码提交到独立 CUDA stream，使它能与文本/噪声准备重叠；真正使用图像 latent 前，主 stream 会等待它完成。
+[`prepare_inputs`](realtimewam/preparation.py) 准备图像 latent、文本 embedding 和初始视频噪声。图像 VAE 编码提交到独立 CUDA stream，使它能与文本/噪声准备重叠；真正使用图像 latent 前，主 stream 会等待它完成。
 
 这里有几种生命周期不同的复用：
 
@@ -67,7 +67,7 @@ flowchart TD
 
 ## 3. 采样：10 次网络预测与状态更新
 
-[`Runtime._generate`](WAMInfer/runtime.py) 是总控制循环。每一步取得当前时间条件，运行联合网络，用原生 flow scheduler 更新动作，并更新未来视频 latent。当前观测对应的 latent 会重新固定为输入图像的编码。
+[`Runtime._generate`](realtimewam/runtime.py) 是总控制循环。每一步取得当前时间条件，运行联合网络，用原生 flow scheduler 更新动作，并更新未来视频 latent。当前观测对应的 latent 会重新固定为输入图像的编码。
 
 动作有一些非激活维度。这些维度遵循原模型规定的解析噪声路径。代码每请求在 CPU 解析一次掩码，生成整数索引并上传；每步继续执行原来的噪声更新规则。移到 CPU 的是整数/布尔准备，没有改动作的浮点更新。
 
@@ -81,7 +81,7 @@ flowchart TD
 
 第一次前向记录每层的当前帧 K/V。后续步的 Transformer 分支只重算未来视频和 Action；联合 attention 仍然能读取那 120 个当前帧的 K/V。输入准备等外围操作并非全部省略。
 
-[`FirstFramePreparation`](WAMInfer/preparation.py) 和 [`ParallelJointLoop._run`](WAMInfer/joint.py) 共同完成这件事。缓存按请求重建，未来帧不套用这个结论，因为它们的状态确实在变化。
+[`FirstFramePreparation`](realtimewam/preparation.py) 和 [`ParallelJointLoop._run`](realtimewam/joint.py) 共同完成这件事。缓存按请求重建，未来帧不套用这个结论，因为它们的状态确实在变化。
 
 ## 5. 真正的并行在 joint.py
 
@@ -122,7 +122,7 @@ flowchart TD
 
 `joint.py` 用 `torch.compile` 编译阶段，减少 Python 调度并融合能够合并的操作。编译结果仍可能包含 Triton kernel 和库调用。
 
-[`CudaGraphForward`](WAMInfer/graphs.py) 在预热后捕获固定的 GPU 执行结构，后续请求刷新静态输入，再 `graph.replay()`。它减少重复提交开销；每次 replay 都会实际执行模型计算。
+[`CudaGraphForward`](realtimewam/graphs.py) 在预热后捕获固定的 GPU 执行结构，后续请求刷新静态输入，再 `graph.replay()`。它减少重复提交开销；每次 replay 都会实际执行模型计算。
 
 其中三个细节与结果正确性直接有关：
 
@@ -146,7 +146,7 @@ flowchart TD
 
 ## 9. FFN 为什么还需要 C++
 
-FFN 的主体是两次大矩阵乘，中间经过 GELU。这里在 Ada 上使用 cuBLASLt：[`PreparedFFN`](WAMInfer/ffn.py) 整理权重布局、按形状准备 plan，`_cublaslt_inference.cpp` 调用 NVIDIA 的矩阵乘实现，将 bias/GELU 放进相应 epilogue。
+FFN 的主体是两次大矩阵乘，中间经过 GELU。这里在 Ada 上使用 cuBLASLt：[`PreparedFFN`](realtimewam/ffn.py) 整理权重布局、按形状准备 plan，`_cublaslt_inference.cpp` 调用 NVIDIA 的矩阵乘实现，将 bias/GELU 放进相应 epilogue。
 
 准备阶段选择算法并分配工作空间；热路径绑定当前张量后直接执行，不在 Graph 捕获中调优。其他受支持硬件或未准备几何使用代码中的原 FFN 路径。
 

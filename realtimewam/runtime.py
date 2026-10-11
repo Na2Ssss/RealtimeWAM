@@ -5,12 +5,12 @@ from functools import partial
 import torch
 from openwam.deploy.denoise_schedule import schedule_sync
 from openwam.deploy.model_loader import load_from_checkpoint_dir
-from WAMInfer.blocks import View, VideoAdapter, ActionAdapter, prepare_packed_weights
-from WAMInfer.ffn import PreparedFFN
-from WAMInfer.graphs import CudaGraphForward, TextEncodeGraph, VAEEncodeGraph, module_guard
-from WAMInfer.joint import JointDriver, ParallelJointLoop
-from WAMInfer.preparation import ConditioningPreparation, FirstFramePreparation
-from WAMInfer.approximation import TokenReuse, MotionRefinement
+from realtimewam.blocks import View, VideoAdapter, ActionAdapter, prepare_packed_weights
+from realtimewam.ffn import PreparedFFN
+from realtimewam.graphs import CudaGraphForward, TextEncodeGraph, VAEEncodeGraph, module_guard
+from realtimewam.joint import JointDriver, ParallelJointLoop
+from realtimewam.preparation import ConditioningPreparation, FirstFramePreparation
+from realtimewam.approximation import TokenReuse, MotionRefinement
 
 
 class Runtime(View):

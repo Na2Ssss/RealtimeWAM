@@ -5,8 +5,8 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 from einops import rearrange
-from WAMInfer._triton_attention import masked_attention
-from WAMInfer._triton_inference import CROSS_RESIDUAL, FFN_RESIDUAL, SELF_INPUT, SELF_RESIDUAL, modulated_norm
+from realtimewam._triton_attention import masked_attention
+from realtimewam._triton_inference import CROSS_RESIDUAL, FFN_RESIDUAL, SELF_INPUT, SELF_RESIDUAL, modulated_norm
 
 
 def _parameter_signature(parameter):
@@ -48,7 +48,7 @@ def prepare_packed_weights(attention, names):
 
 def qk_rms_rope(q, k, norm_q, norm_k, frequencies, num_heads):
     """BF16 RMSNorm + RoPE for the fused runtime's native Wan/Action layers."""
-    from WAMInfer._triton_inference import rms_rope
+    from realtimewam._triton_inference import rms_rope
 
     return rms_rope(q, k, norm_q.weight, norm_k.weight, torch.view_as_real(frequencies), num_heads, norm_q.eps)
 
@@ -208,7 +208,7 @@ class VideoAdapter(View):
         q, k = qk_rms_rope(q, k, sa.norm_q, sa.norm_k, state.rope_freqs, sa.num_heads)
         state.hidden_states = x
         if layer_id == 1 and "token_reuse" in state.extras:
-            from WAMInfer.approximation import select_tokens
+            from realtimewam.approximation import select_tokens
 
             select_tokens(state, x)
         return q, k, v, (x,)
@@ -284,7 +284,7 @@ class VideoAdapter(View):
         return hidden_states
 
     def preprocess_input_for_inference(self, **kwargs):
-        from WAMInfer.preparation import prepare_inputs
+        from realtimewam.preparation import prepare_inputs
 
         return prepare_inputs(self, **kwargs)
 

@@ -1,6 +1,20 @@
 # 验证与性能记录
 
-本文记录当前 WAMInfer 的独立代码验证与增量测量。[RealtimeWAM 论文](https://arxiv.org/abs/2610.10079)中的主表还包含跨观测 token 复用及自适应 2F/4F，并使用闭环 rollout 平均延时；本仓库 v0.1.0 未发布完整方法和论文评测流程，因此下文约 217 ms 的数据不等于论文主表的 63.09 ms，也不对应论文某一行的已验证复现。论文使用的 OpenWAM Native 参照提交和这里的外接包参照版本也不同，详见论文附录 C.1。
+本文记录当前 RealtimeWAM 的独立代码验证与增量测量。[RealtimeWAM 论文](https://arxiv.org/abs/2610.10079)中的主表还包含跨观测 token 复用及自适应 2F/4F，并使用闭环 rollout 平均延时；本仓库 v0.1.0 未发布完整方法和论文评测流程，因此下文约 217 ms 的数据不等于论文主表的 63.09 ms，也不对应论文某一行的已验证复现。论文使用的 OpenWAM Native 参照提交和这里的外接包参照版本也不同，详见论文附录 C.1。
+
+## v0.3.0：RealtimeWAM 命名与三项方法的发布检查
+
+公开项目与发行包统一为 RealtimeWAM / `realtimewam`，原 `WAMInfer/` 移至 `realtimewam/`。运行时与 benchmark 共 11 个 Python 模块在统一 import 路径并排除文档字符串后，AST 与 `fec7b8f` 一致；本轮没有改变算法、数值计算或开关默认值。核心仍是 10 个 Python 文件、2263 行。
+
+| 方法 | 实际执行入口 | 验证覆盖 |
+| --- | --- | --- |
+| 并行执行 | `ParallelJointLoop._run`、`prepare_inputs` | 上游层对照、CUDA Graph 重放、请求内观测 K/V、模型恢复 |
+| 跨观测 FFN 复用 | `TokenReuse`、`select_tokens`、`VideoAdapter.ffn_at_layer_for_compile` | 必选位置、容量与评分、紧凑 FFN 行数、当前 gate、历史提交及失效 |
+| 自适应 2F/4F | `MotionRefinement`、`Runtime._generate/_forward_impl` | 8 cm 边界、共享前缀、十次 Euler 更新、残差复用时仍使用当前输入与输出头、两个开关独立及同时开启 |
+
+改名后的完整测试集在 A100 和 RTX 4090 各 **27 项通过**。wheel 与源码分发均已构建，wheel 包含与 checkout 一致的 11 个 Python 模块及两份 C++ 扩展源码；在复用既有 OpenWAM 依赖的独立安装环境中检查导入、公开接口、CLI，以及安装包的 GPU 推理路径。历史 `evidence/` 文件保留原始名字和源码哈希，不因改名重写。
+
+README 聚焦方法和使用；具体测量记录保留在下文。当前发布包含 OpenWAM 的三项方法，FastWAM 和完整闭环评测工具尚未包含。
 
 ## 2026-10-11：按论文对齐 token 复用配置
 

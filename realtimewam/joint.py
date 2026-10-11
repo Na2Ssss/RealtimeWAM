@@ -5,8 +5,8 @@ evaluations. All future Video and Action tokens are always recomputed.
 """
 
 import torch
-from WAMInfer.blocks import View
-from WAMInfer._triton_attention import masked_attention
+from realtimewam.blocks import View
+from realtimewam._triton_attention import masked_attention
 
 
 class _BranchPhase:
@@ -56,7 +56,7 @@ class ParallelJointLoop:
         if prefix is not None:
             ck, cv = prefix
             if self.structured_attention and mask is None:
-                from WAMInfer._triton_attention import current_frame_attention
+                from realtimewam._triton_attention import current_frame_attention
 
                 return current_frame_attention(qv, qa, ck, kv, ka, cv, vv, va, self.driver.num_heads)
             result = self.driver._mixed_attention(
@@ -67,7 +67,7 @@ class ParallelJointLoop:
             and self.driver.attention_mask_mode == "mutual"
             and self.driver.vb.video_attention_mask_mode == "first_frame_causal"
         ):
-            from WAMInfer._triton_attention import joint_first_frame_attention
+            from realtimewam._triton_attention import joint_first_frame_attention
 
             result = joint_first_frame_attention(
                 torch.cat((qv, qa), dim=1),

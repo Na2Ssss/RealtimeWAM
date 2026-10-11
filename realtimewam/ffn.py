@@ -12,7 +12,7 @@ from pathlib import Path
 
 import torch
 
-from WAMInfer.blocks import _parameter_signature
+from realtimewam.blocks import _parameter_signature
 
 _PLANS = {}
 _IDS = count()

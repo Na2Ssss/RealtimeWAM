@@ -3,25 +3,25 @@ requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "waminfer"
-version = "0.2.0"
-description = "OpenWAM Parallel inference with optional token reuse and adaptive 2F/4F"
+name = "realtimewam"
+version = "0.3.0"
+description = "RealtimeWAM: parallel OpenWAM inference with optional FFN reuse and adaptive 2F/4F"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
 dependencies = ["torch>=2.7,<2.8", "numpy", "Pillow", "einops"]
 
 [project.urls]
-Repository = "https://github.com/Na2Ssss/WAMInfer"
+Repository = "https://github.com/Na2Ssss/RealtimeWAM"
 Upstream = "https://github.com/OpenWAM-Official/OpenWAM"
 Paper = "https://arxiv.org/abs/2610.10079"
-Documentation = "https://github.com/Na2Ssss/WAMInfer/blob/main/CODE_GUIDE.md"
+Documentation = "https://github.com/Na2Ssss/RealtimeWAM/blob/main/CODE_GUIDE.md"
 
 [tool.setuptools.packages.find]
-include = ["WAMInfer"]
+include = ["realtimewam"]
 
 [tool.setuptools.package-data]
-WAMInfer = ["*.cpp"]
+realtimewam = ["*.cpp"]
 
 [tool.ruff.lint]
 select = ["F"]

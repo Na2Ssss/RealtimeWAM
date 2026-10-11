@@ -1,8 +1,8 @@
 import pytest
 import torch
 
-from WAMInfer._triton_attention import masked_attention
-from WAMInfer.graphs import CudaGraphForward
+from realtimewam._triton_attention import masked_attention
+from realtimewam.graphs import CudaGraphForward
 
 
 @pytest.mark.gpu
@@ -61,8 +61,8 @@ def test_sequential_graphs_share_inputs_and_refresh_after_recapture():
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @torch.no_grad()
 def test_current_frame_banks_match_native_attention_and_refresh(first, future, action, heads, batch):
-    from WAMInfer._triton_attention import current_frame_attention
-    from WAMInfer.tests.helpers import make_arch
+    from realtimewam._triton_attention import current_frame_attention
+    from realtimewam.tests.helpers import make_arch
 
     def random(rows):
         return torch.randn(batch, rows, heads * 128, device="cuda", dtype=torch.bfloat16)
@@ -135,8 +135,8 @@ def test_exact_masked_attention_prefix_holes_and_fresh_graph_inputs():
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @torch.no_grad()
 def test_structured_joint_attention_matches_full_mask(video, first, action, heads, batch):
-    from WAMInfer._triton_attention import joint_first_frame_attention
-    from WAMInfer.tests.helpers import make_arch
+    from realtimewam._triton_attention import joint_first_frame_attention
+    from realtimewam.tests.helpers import make_arch
 
     count = video + action
     q = torch.randn(batch, count, heads * 128, device="cuda", dtype=torch.bfloat16)

@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 import torch
 
-from WAMInfer import accelerate
-from WAMInfer.tests.helpers import make_arch, make_inputs
+from realtimewam import accelerate
+from realtimewam.tests.helpers import make_arch, make_inputs
 
 
 @pytest.mark.gpu

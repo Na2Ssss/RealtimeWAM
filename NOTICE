@@ -1,11 +1,11 @@
-WAMInfer
+RealtimeWAM
 
 External inference code adapted around OpenWAM's inference interfaces.
 Upstream: https://github.com/OpenWAM-Official/OpenWAM
 Reference revision: 898e2f96c02c172f078c17ff85a055a6bbd419a2
 
 The upstream Apache-2.0 license text is retained in LICENSE.
-The WAMInfer source files are external adaptations, including branch scheduling,
+The RealtimeWAM source files are external adaptations, including branch scheduling,
 prepared conditioning, graph replay, projection packing, and fused inference
 operators. They are not unmodified copies of OpenWAM model definitions.
 Upstream model source, checkpoints, and datasets are not distributed here.

@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from WAMInfer.ffn import PreparedFFN, _PLANS
+from realtimewam.ffn import PreparedFFN, _PLANS
 
 
 @pytest.mark.gpu

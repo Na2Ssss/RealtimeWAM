@@ -1,6 +1,6 @@
 import pytest
 import torch
-from WAMInfer.graphs import TextEncodeGraph
+from realtimewam.graphs import TextEncodeGraph
 from openwam.model.video_backbone.wan.models.text_encoder import WanTextEncoder
 
 

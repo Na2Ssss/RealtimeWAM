@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from WAMInfer.graphs import VAEEncodeGraph
+from realtimewam.graphs import VAEEncodeGraph
 from openwam.model.video_backbone.wan.models.vae import VideoVAE38_
 
 

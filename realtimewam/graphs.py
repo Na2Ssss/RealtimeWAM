@@ -158,7 +158,7 @@ class TextEncodeGraph:
 
     @torch.no_grad()
     def encode_prompt(self, prompt, tokenizer, device):
-        from WAMInfer.preparation import encode_text
+        from realtimewam.preparation import encode_text
 
         self._check_encoder()
         key = (prompt, id(tokenizer), torch.device(device))

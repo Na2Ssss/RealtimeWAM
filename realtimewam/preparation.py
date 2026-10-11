@@ -3,7 +3,7 @@
 import torch
 from openwam.model.video_backbone.wan.dit_forward import build_time_modulation as native_time_modulation
 from openwam.model.video_backbone.wan.preprocess import check_resize_height_width, preprocess_video
-from WAMInfer.graphs import CudaGraphForward, module_guard
+from realtimewam.graphs import CudaGraphForward, module_guard
 
 
 def build_time_modulation(dit, timestep, latents, *, patch_size, fuse_vae_embedding_in_latents):

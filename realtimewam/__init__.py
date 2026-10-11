@@ -1,4 +1,4 @@
-"""Parallel-only external acceleration for upstream OpenWAM."""
+"""RealtimeWAM: parallel OpenWAM inference with optional adaptive computation."""
 
 from .runtime import OpenWAM, Runtime as accelerate
 

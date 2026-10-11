@@ -4,9 +4,9 @@ import numpy as np
 import pytest
 import torch
 
-from WAMInfer import accelerate
-from WAMInfer.approximation import MotionRefinement, TokenReuse, select_tokens
-from WAMInfer.tests.helpers import make_arch, make_inputs
+from realtimewam import accelerate
+from realtimewam.approximation import MotionRefinement, TokenReuse, select_tokens
+from realtimewam.tests.helpers import make_arch, make_inputs
 
 
 def test_capacity_and_feature_selection():
@@ -65,7 +65,7 @@ def test_rgb_route_preserves_float32_threshold_and_snapshot(dtype):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @torch.no_grad()
 def test_borrowed_graph_outputs_refresh_downstream_inputs():
-    from WAMInfer.graphs import CudaGraphForward
+    from realtimewam.graphs import CudaGraphForward
 
     producer = CudaGraphForward(lambda x: x + 1, reuse_unchanged_inputs=True, clone_outputs=False)
     consumer = CudaGraphForward(lambda x: 2 * x, reuse_unchanged_inputs=True)
@@ -241,7 +241,7 @@ def test_switches_graph_replay_and_history(monkeypatch, reuse_tokens, adaptive):
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @torch.no_grad()
 def test_compact_normalization_preserves_residual_and_selected_rows():
-    from WAMInfer._triton_inference import CROSS_RESIDUAL, modulated_norm
+    from realtimewam._triton_inference import CROSS_RESIDUAL, modulated_norm
 
     x = torch.randn(1, 360, 3072, device="cuda", dtype=torch.bfloat16)
     update = torch.randn_like(x)
