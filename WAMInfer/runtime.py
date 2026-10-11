@@ -20,7 +20,8 @@ class Runtime(View):
         *,
         reuse_tokens=False,
         adaptive_2f4f=False,
-        refresh_buckets=(32, 64, 96, 120),
+        refresh_buckets=(16, 80, 120),
+        reserve_fraction=0.0,
         motion_threshold=0.08,
     ):
         super().__init__(architecture)
@@ -54,7 +55,7 @@ class Runtime(View):
         self._first_frame_preparation = FirstFramePreparation(self)
         self._conditioning_preparation = ConditioningPreparation(self)
         self._inference_eval_guard = self._inference_module_guard = None
-        self.token_reuse = TokenReuse(refresh_buckets) if reuse_tokens else None
+        self.token_reuse = TokenReuse(refresh_buckets, reserve_fraction) if reuse_tokens else None
         self.adaptive_2f4f, self.motion_threshold = adaptive_2f4f, motion_threshold
         self._residual_graphs = {}
         self.last_stats = {}
@@ -342,7 +343,8 @@ class OpenWAM:
         checkpoint_name=None,
         reuse_tokens=False,
         adaptive_2f4f=False,
-        refresh_buckets=(32, 64, 96, 120),
+        refresh_buckets=(16, 80, 120),
+        reserve_fraction=0.0,
         motion_threshold=0.08,
     ):
         self.config, self.original = load_from_checkpoint_dir(checkpoint_dir, device=device, ckpt_name=checkpoint_name)
@@ -351,6 +353,7 @@ class OpenWAM:
             reuse_tokens=reuse_tokens,
             adaptive_2f4f=adaptive_2f4f,
             refresh_buckets=refresh_buckets,
+            reserve_fraction=reserve_fraction,
             motion_threshold=motion_threshold,
         )
         self._lock = threading.Lock()

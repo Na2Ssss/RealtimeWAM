@@ -10,7 +10,7 @@ from WAMInfer.tests.helpers import make_arch, make_inputs
 
 
 def test_capacity_and_feature_selection():
-    history = TokenReuse((1, 2, 3, 4))
+    history = TokenReuse((1, 2, 3, 4), reserve_fraction=0.25)
     inputs = dict(latents=torch.zeros(1, 4, 3, 4, 4))
     image = np.zeros((8, 8, 3), dtype=np.uint8)
     reuse, observation = history.begin(image, inputs, "task", (1, 2, 2))
@@ -249,7 +249,7 @@ def test_compact_normalization_preserves_residual_and_selected_rows():
     time = torch.randn(1, 360, 6, 3072, device="cuda", dtype=x.dtype)
     args = (x, update, modulation, None, time, None, None, CROSS_RESIDUAL, 1e-6)
     residual, normalized = modulated_norm(*args)
-    for count in (32, 64, 96, 120):
+    for count in (16, 32, 64, 80, 96, 120):
         indices = torch.cat((torch.randperm(120, device="cuda")[:count].sort().values,
                              torch.arange(120, 360, device="cuda")))
         positions = torch.full((360,), -1, device="cuda").scatter(
@@ -258,3 +258,34 @@ def test_compact_normalization_preserves_residual_and_selected_rows():
         actual_residual, compact = modulated_norm(*args, positions, indices.numel())
         assert torch.equal(actual_residual, residual)
         assert torch.equal(compact, normalized.index_select(1, indices))
+
+
+def test_paper_capacity_boundaries_and_fixed_80_profile():
+    inputs = dict(latents=torch.zeros(1, 4, 3, 24, 20))
+    image = np.zeros((384, 320, 3), dtype=np.uint8)
+    for buckets, expected in [((16, 80, 120), (16, 16, 80, 80, 120)),
+                              ((80, 120), (80, 80, 80, 80, 120))]:
+        history = TokenReuse(buckets)
+        initial, observation = history.begin(image, inputs, "task", (1, 2, 2))
+        assert initial["count"] == 120
+        history.commit(observation, torch.zeros(1, 120, 2), torch.zeros(1, 1, 120, 2))
+        for changed, count in zip((0, 16, 17, 80, 81), expected):
+            current = image.copy()
+            for token in range(changed):
+                y, x = divmod(token, 10)
+                current[y*32:(y+1)*32, x*32:(x+1)*32] = 6
+            reuse, _ = history.begin(current, inputs, "task", (1, 2, 2))
+            assert reuse["count"] == count
+            assert reuse["mandatory"].sum().item() == changed
+    assert TokenReuse((16, 80, 120)).reserve_fraction == 0.0
+
+
+def test_paper_relative_feature_score_at_small_magnitudes():
+    # A tiny feature changing from zero has maximal relative change. An
+    # oversized denominator floor would incorrectly prefer token 1 instead.
+    previous = torch.tensor([[[0.0], [1.0], [1.0], [0.0]]])
+    current = torch.tensor([[[1e-9], [2.0], [1.0], [0.0], [1.0], [1.0]]])
+    reuse = dict(n=4, count=1, features=previous, mandatory=torch.zeros(4, dtype=torch.bool))
+    state = SimpleNamespace(extras=dict(token_reuse=reuse))
+    select_tokens(state, current)
+    assert state.extras["token_indices"].tolist() == [0, 4, 5]

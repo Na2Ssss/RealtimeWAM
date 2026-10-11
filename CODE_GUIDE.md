@@ -1,4 +1,4 @@
-# 沿着一次推理读懂 2257 行代码
+# 沿着一次推理读懂 2263 行代码
 
 这是 [RealtimeWAM 论文](https://arxiv.org/abs/2610.10079)的 OpenWAM 外接实现。Parallel 始终启用，`reuse_tokens` 和 `adaptive_2f4f` 是两个独立、默认关闭的有损开关。没有额外 baseline 模式；FastWAM 和完整论文评测入口尚未包含。
 
@@ -10,19 +10,19 @@
 
 | 文件 | 行数 | 负责的事情 | 先看哪里 |
 | --- | ---: | --- | --- |
-| [`runtime.py`](WAMInfer/runtime.py) | 404 | 接口、采样循环、准备与释放资源 | `OpenWAM.generate`、`Runtime._generate` |
+| [`runtime.py`](WAMInfer/runtime.py) | 407 | 接口、采样循环、准备与释放资源 | `OpenWAM.generate`、`Runtime._generate` |
 | [`preparation.py`](WAMInfer/preparation.py) | 214 | 图像/文本准备、条件 K/V、时间调制、当前帧 prefill | `prepare_inputs`、`ConditioningPreparation` |
 | [`blocks.py`](WAMInfer/blocks.py) | 292 | 适配原模型，将每层拆成可调度的阶段 | `View`、两个 Adapter |
-| [`approximation.py`](WAMInfer/approximation.py) | 89 | token 预算与历史、运动自适应决策 | `TokenReuse`、`MotionRefinement` |
+| [`approximation.py`](WAMInfer/approximation.py) | 92 | token 预算与历史、运动自适应决策 | `TokenReuse`、`MotionRefinement` |
 | [`joint.py`](WAMInfer/joint.py) | 165 | Video/Action 双 stream 调度、联合 attention | `ParallelJointLoop._run` |
 | [`graphs.py`](WAMInfer/graphs.py) | 257 | CUDA Graph、输入刷新、文本和 VAE 执行 | `CudaGraphForward._replay` |
 | [`ffn.py`](WAMInfer/ffn.py) | 118 | 准备 FFN 权重布局和 cuBLASLt 执行计划 | `PreparedFFN.prepare/forward` |
 | [`_triton_inference.py`](WAMInfer/_triton_inference.py) | 229 | 融合归一化、调制、残差和 RoPE | `_modulated_norm`、`_qk_rms_rope_kernel` |
 | [`_triton_attention.py`](WAMInfer/_triton_attention.py) | 484 | 不同 mask/缓存布局的 attention kernel | `_attention_kernel`、`_split_attention_kernel` |
 | [`__init__.py`](WAMInfer/__init__.py) | 5 | 导出 `OpenWAM` 和 `accelerate` | 整个文件 |
-| **核心 Python 合计** | **2257** | 包括注释和空行 | |
+| **核心 Python 合计** | **2263** | 包括注释和空行 | |
 
-另外还有 `_cublaslt_inference.cpp` 197 行、`_inference_guards.cpp` 214 行。benchmark 和测试不计入核心行数。两个开关及后续缓存优化相对 v0.1.0 净增 236 行核心 Python，只增加一个实现文件。
+另外还有 `_cublaslt_inference.cpp` 197 行、`_inference_guards.cpp` 214 行。benchmark 和测试不计入核心行数。两个开关及后续缓存优化相对 v0.1.0 净增 242 行核心 Python，只增加一个实现文件。
 
 ## 1. 入口：接入原模型
 
@@ -166,7 +166,9 @@ FFN 的主体是两次大矩阵乘，中间经过 GELU。这里在 Ada 上使用
 
 ## 11. 两个有损开关具体省在哪里
 
-`reuse_tokens=True` 省的是**不同观测之间部分当前帧 token 的 FFN**。第一层完整计算；RGB 变化超过 5/255 的位置必须刷新，并为其他位置预留 25% 名额。所需数量向上取一个固定容量（默认 32/64/96/120），剩余名额用第一层特征变化排序填满，分数相同时按位置顺序决定。后续层把选中的当前帧行与所有未来帧行一起送进 FFN，再把结果写回缓存。没有选中的位置保留上次 FFN 输出；attention 和本次残差门控继续重算。
+`reuse_tokens=True` 省的是**不同观测之间部分当前帧 token 的 FFN**。第一层完整计算；RGB 变化超过 5/255 的位置必须刷新。所需数量为 `必选数 + ceil(reserve_fraction × 其余位置数)`，默认 `reserve_fraction=0`，向上取默认容量 **16/80/120**。这对应论文 [Figure 6 / 附录 E.3](https://arxiv.org/html/2610.10079v1#A5.SS3) 的在线档位及配套评测配置；[附录 C.4](https://arxiv.org/html/2610.10079v1#A3.SS4) 的固定 80-token profiling 则使用 `(80,120)` 和零预留。
+
+剩余名额用第一层特征的对称相对 L1 变化排序填满，分母下限为 `1e-12`，分数相同时按位置顺序决定。**80 是刷新 80、复用 40**，不是复用 80。后续层把选中的当前帧行与所有未来帧行一起送进 FFN，再把结果写回缓存。没有选中的位置保留上次 FFN 输出；attention 和本次残差门控继续重算。旧版本默认的 32/64/96/120 与 25% 预留已替换，开启近似开关时不能要求新旧策略输出逐位相同。
 
 FFN 输入的归一化直接将选中行写入紧凑缓冲区，省去逐层 gather；所有行的当前 residual 仍完整写出。首层选择时建立一次位置映射，后续层按该映射合并旧缓存与新 FFN 输出，编译器将拼接和读取融合。这个执行调整不改变选中的位置、FFN 算法或舍入顺序。
 

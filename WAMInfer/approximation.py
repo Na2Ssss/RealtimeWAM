@@ -6,10 +6,13 @@ import torch
 
 
 class TokenReuse:
-    def __init__(self, buckets):
+    def __init__(self, buckets, reserve_fraction=0.0):
         self.buckets = tuple(sorted(set(buckets)))
         if not self.buckets or self.buckets[0] < 1:
             raise ValueError("Refresh capacities must be positive integers")
+        if not 0 <= reserve_fraction <= 1:
+            raise ValueError("reserve_fraction must be between zero and one")
+        self.reserve_fraction = reserve_fraction
         self.reset()
 
     def reset(self):
@@ -35,7 +38,7 @@ class TokenReuse:
             changes = changes.reshape(h, rgb.shape[0] // h, w, rgb.shape[1] // w, 3)
             mandatory = changes.mean(axis=(1, 3, 4)).reshape(-1) > 5.0
         required = int(mandatory.sum())
-        required += math.ceil(0.25 * (n - required))
+        required += math.ceil(self.reserve_fraction * (n - required))
         count = next(b for b in self.capacities(n) if b >= required)
         reuse = dict(
             n=n,
@@ -60,7 +63,7 @@ def select_tokens(state, features):
     state.extras["token_features"] = current
     if count < n:
         now, before = current.float(), reuse["features"].float()
-        score = 2 * (now - before).abs().sum(-1) / (now.abs() + before.abs()).sum(-1).clamp_min(1e-6)
+        score = 2 * (now - before).abs().sum(-1) / (now.abs() + before.abs()).sum(-1).clamp_min(1e-12)
         score = score.squeeze(0).masked_fill(reuse["mandatory"], float("inf"))
         selected = torch.argsort(score, descending=True, stable=True)[:count].sort().values
         future = torch.arange(n, features.shape[1], device=features.device)

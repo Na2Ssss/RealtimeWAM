@@ -25,6 +25,7 @@ World Action Models jointly model visual dynamics and actions, but inference lat
 
 ## News
 
+- **2026-10-11:** Token-reuse defaults now follow the paper's 16/80/120 allocation, with a separate 80/120 profiling configuration. See [token capacities](#token-capacities-and-cache-lifecycle).
 - **2026-10-10:** [v0.2.0](https://github.com/Na2Ssss/WAMInfer/releases/tag/v0.2.0) adds optional token reuse and adaptive 2F/4F to the OpenWAM runtime.
 - **2026-10-07:** [RealtimeWAM](https://arxiv.org/abs/2610.10079) is available on arXiv.
 
@@ -63,9 +64,33 @@ The following values are reported in [Table 1 of the paper](https://arxiv.org/ht
 These are results of the full paper framework. The current public release provides the OpenWAM external runtime; FastWAM and the complete closed-loop evaluation suite are not yet included. Its independent measurements are documented below.
 
 <details>
-<summary><b>Runtime: paired latency measurements and numerical validation</b></summary>
+<summary><b>Current token policy: paired capacity sweep on RTX 4090</b></summary>
 
-**RTX 4090, 48 GiB · BF16 · 384×320 · 9 video frames · 32 actions · 10 Euler updates.** The latest optimization writes selected FFN inputs directly from normalization and fuses cache reconstruction using one position map per request. **Both columns enable token reuse:** before is `9c537c2`, after is current `main`. Each row contains 80 alternating before/after pairs with shared weights, fixed FFN algorithms, four CPU threads and CPU affinity 0–7.
+The default reuse capacities are now **16/80/120 with zero reserve**, matching the paper's online allocation example and its evaluation configuration. Reuse remains FFN-only. The previous compact-normalization and cache-reconstruction optimizations are retained.
+
+The following **forced-2F offline measurements** use one full checkpoint, fixed per-shape FFN algorithms and identical dense cache history restored before every request. Each row averages 90 alternating pairs across three inputs: one unchanged observation and synthetic changes in 1 or 12 RGB tiles. Timing covers CPU inputs through CPU actions, including cache commits; restoration, compilation and capture are excluded.
+
+| Refreshed observation positions | Candidate | Paired 80-token control | Candidate − control |
+| --- | ---: | ---: | ---: |
+| 16 | 52.26 ms | 54.02 ms | −1.755 ms |
+| 32 | 53.99 ms | 54.16 ms | −0.172 ms |
+| 64 | 54.23 ms | 54.24 ms | −0.013 ms |
+| 80 — repeat control | 54.54 ms | 54.53 ms | +0.007 ms |
+| 96 | 56.55 ms | 54.16 ms | +2.392 ms |
+| 120 | 56.88 ms | 54.52 ms | +2.361 ms |
+
+The 64/80 measurements are consistent with a latency plateau; 32 costs slightly less, while 96/120 cost more. The 120 row includes reuse bookkeeping and is **not** a reuse-off baseline. GPU clocks are unlocked. Compare paired columns within each row rather than subtracting results from separate runs.
+
+**27 tests passed on each of A100 and RTX 4090.** Full-checkpoint checks covered default capacity boundaries, dense initialization, fresh layer-0 features and preservation of unselected FFN cache entries. All 1,440 timed outputs repeated exactly at matching input, capacity and restored history, with no graph recaptures. Changing the default approximate policy can change actions relative to earlier releases. Numerical deviations in these fixtures were not monotonic with refresh count; no task-success improvement is inferred.
+
+These measurements use `checkpoint_step_118655`, not the historical step-600 profiling setup in the paper. They verify this implementation and its capacity behavior, not reproduction of paper latency or success rates. See [raw paired samples and provenance](evidence/token-reuse-paper-alignment.json) and [validation details](VALIDATION.md).
+
+</details>
+
+<details>
+<summary><b>Historical runtime optimization: paired measurements at 32-token refresh</b></summary>
+
+**RTX 4090, 48 GiB · BF16 · 384×320 · 9 video frames · 32 actions · 10 Euler updates.** The execution optimization writes selected FFN inputs directly from normalization and fuses cache reconstruction using one position map per request. **Both columns enable token reuse:** before is `9c537c2`, after is `f689626`. This comparison used the previous 32/64/96/120 capacities and 25% reserve, before the paper configuration was aligned. Each row contains 80 alternating before/after pairs with shared weights, fixed FFN algorithms, four CPU threads and CPU affinity 0–7.
 
 | Input sequence | Transformer evaluations | Before | After |
 | --- | --- | ---: | ---: |
@@ -96,7 +121,7 @@ WAMInfer shares the original OpenWAM model and weights through an external wrapp
 | Cross-observation FFN/token reuse | `reuse_tokens` | `False` |
 | Motion-adaptive 2F/4F | `adaptive_2f4f` | `False` |
 
-The switches are independent and introduce approximation when enabled. With both off, the existing Parallel behavior is preserved. The package contains **10 core Python files / 2,242 lines** and **2 C++ files / 411 lines**, including comments and blank lines, excluding tests and the benchmark.
+The switches are independent and introduce approximation when enabled. With both off, the existing Parallel behavior is preserved. The package contains **10 core Python files / 2,263 lines** and **2 C++ files / 411 lines**, including comments and blank lines, excluding tests and the benchmark.
 
 ## Getting started
 
@@ -189,16 +214,35 @@ For a separate script, import it with `from motion_metric import displacement` b
 
 </details>
 
-<details>
-<summary>Token capacities and cache lifecycle</summary>
+### Token capacities and cache lifecycle
 
 Layer 0 is fully recomputed. Later layers reuse only unrefreshed current-observation FFN rows; attention, current residual gates, future-video tokens and Action tokens receive fresh computation at each full evaluation.
 
-RGB change above 5/255 marks mandatory positions. A further 25% of quiet positions is reserved, and the count rounds up to `refresh_buckets=(32, 64, 96, 120)` for the default 120 observation tokens. Feature change fills the remaining capacity. Other geometries retain smaller configured capacities and always include full refresh; profile capacities for your GPU and shapes.
+RGB change above 5/255 marks mandatory positions. The required count is `mandatory + ceil(reserve_fraction * quiet)`, rounded up to the next prepared capacity. Remaining slots are filled by the symmetric relative L1 change in layer-0 features, with a denominator floor of `1e-12` and stable spatial-index tie breaking. Mandatory positions are always kept.
+
+| Configuration | `refresh_buckets` | `reserve_fraction` | Reference |
+| --- | --- | --- | --- |
+| Default online allocation | `(16, 80, 120)` | `0.0` | [Figure 6 / Appendix E.3](https://arxiv.org/html/2610.10079v1#A5.SS3), with zero reserve from the corresponding evaluation configuration |
+| Fixed-80 profiling inputs | `(80, 120)` | `0.0` | [Appendix C.4](https://arxiv.org/html/2610.10079v1#A3.SS4) |
+
+For the default 120 observation positions, **80 means refreshing 80 and reusing 40 FFN rows**. Initialization always refreshes all 120. With zero reserve, 0–16 mandatory positions select 16; 17–80 select 80; 81–120 select 120. Capacities are hardware-dependent: fewer refreshed rows need not be faster, which motivates the paper's [capacity-filling experiment](https://arxiv.org/html/2610.10079v1#A4.SS3).
+
+To use the fixed-80 profiling configuration:
+
+```python
+model = OpenWAM(
+    "/path/to/checkpoint",
+    reuse_tokens=True,
+    refresh_buckets=(80, 120),
+    reserve_fraction=0.0,
+)
+```
+
+This selects 80 after initialization when at most 80 positions are mandatory, otherwise 120. It does not force a 2F budget; adaptive refinement remains an independent switch. Other geometries retain smaller configured capacities and always include full refresh.
+
+These defaults supersede the 32/64/96/120 capacities and 25% reserve in `v0.2.0` through `f689626`. Enabling reuse can therefore produce different actions from those versions. The previous capacity policy remains available through `refresh_buckets=(32, 64, 96, 120), reserve_fraction=0.25`; the feature-score denominator now follows `1e-12` rather than `1e-6`.
 
 History is committed once per completed request. Graph warmup does not advance it. `last_stats` reports refreshed tokens, full-evaluation indices and displacement in metres.
-
-</details>
 
 <details>
 <summary>Wrap an already loaded architecture</summary>
