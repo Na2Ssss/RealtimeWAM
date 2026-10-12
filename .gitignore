@@ -6,6 +6,7 @@ __pycache__/
 build/
 dist/
 .venv/
+/assets/
 .env
 *.safetensors
 *.pt

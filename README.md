@@ -47,15 +47,44 @@ Token reuse and adaptive refinement introduce approximation. Both are disabled b
 
 ### Installation
 
-Use a working [OpenWAM environment](https://github.com/OpenWAM-Official/OpenWAM/tree/898e2f96c02c172f078c17ff85a055a6bbd419a2) and compatible checkpoint; `import openwam` must already work. Weights and datasets are supplied separately.
+Start from a fresh **Python 3.10 or 3.11** environment on Linux with an NVIDIA GPU and a driver compatible with CUDA 12.8. Use a GPU with **at least 48 GiB** for the full checkpoint below. Tested hardware includes an A100 80 GiB and an RTX 4090 with 48 GiB (not the standard 24 GiB card). Install a C++ compiler and the **CUDA 12.x development toolkit** before continuing (tested with toolkit 12.4 and PyTorch's 12.8 runtime).
 
 ```bash
 git clone https://github.com/Na2Ssss/RealtimeWAM.git
 cd RealtimeWAM
-python -m pip install --no-deps -e .
+python3.10 -m venv .venv
+source .venv/bin/activate
+export CUDA_HOME=/usr/local/cuda  # Point to your CUDA 12.x toolkit.
+export PATH="$CUDA_HOME/bin:$PATH"
+python -m pip install --upgrade pip
+python -m pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 \
+  --index-url https://download.pytorch.org/whl/cu128
+
+git clone https://github.com/OpenWAM-Official/OpenWAM.git ../OpenWAM
+git -C ../OpenWAM checkout 898e2f96c02c172f078c17ff85a055a6bbd419a2
+python -m pip install -e ../OpenWAM -e '.[test]'
 ```
 
-Validated with Python 3.10/3.11, PyTorch 2.7.1+cu128 and matching Triton on A100 and RTX 4090. Extensions require a C++ compiler, CUDA development tools, Ninja and the `nvidia.cublas` package. Supported models use CUDA BF16, `head_dim=128`, Wan22Ti2v, `joint_self_attn`, first-frame-causal attention and the native Wan VAE.
+This installs the public upstream source without modifying it, plus Ninja and the test dependencies. PyTorch supplies matching Triton and `nvidia.cublas`; its wheel does not supply the system CUDA development toolkit. Supported models use CUDA BF16, `head_dim=128`, Wan22Ti2v, `joint_self_attn`, first-frame-causal attention and the native Wan VAE.
+
+### Public checkpoint and runnable example
+
+Download the [official RoboTwin checkpoint](https://huggingface.co/OpenWAM/OpenWAM-Alpha-Sim-RoboTwin-Full), including its configuration, tokenizer and normalization statistics (about 25 GB). No private checkpoint or additional Wan download is needed.
+
+```bash
+hf download OpenWAM/OpenWAM-Alpha-Sim-RoboTwin-Full \
+  --revision 04b96af53eeeb111c64631f822efcbb82f4b186e \
+  --local-dir assets/openwam-robotwin
+
+# Default parallel execution; both approximate switches are off.
+python examples/smoke.py --checkpoint assets/openwam-robotwin
+# The switches work independently or together.
+python examples/smoke.py --checkpoint assets/openwam-robotwin --reuse-tokens
+python examples/smoke.py --checkpoint assets/openwam-robotwin --adaptive-2f4f
+python examples/smoke.py --checkpoint assets/openwam-robotwin --reuse-tokens --adaptive-2f4f
+```
+
+The example creates a synthetic RGB image and a raw 20-dimensional state for this checkpoint. It checks finite **32×20 actions**, full refresh followed by **16/120 refreshed positions** when reuse is enabled, and both **2F and 4F** routes when adaptation is enabled. Its fixed motion callbacks are only for route testing; real deployment needs the robot-specific metric below. It does not measure task quality or reproduce paper timings. First calls compile kernels and capture CUDA Graphs and can take several minutes.
 
 ### Basic inference
 
@@ -70,7 +99,7 @@ prompt = "Pick up the red block."
 image = Image.open("observation.png").convert("RGB")  # 320 W × 384 H
 state = np.load("proprio.npy")
 
-model = OpenWAM("/path/to/checkpoint")
+model = OpenWAM("assets/openwam-robotwin")
 result = model.generate(prompt, image, proprio=state)
 actions = result["actions"]
 model.close()
@@ -80,15 +109,16 @@ Defaults: **384×320 image, 9 video frames, 32 output actions, ten Euler updates
 
 ### Enable token reuse and adaptive 2F/4F
 
-Supply a motion metric that converts predicted actions into end-effector displacement in **metres**. For a robot whose actions and state both contain **absolute end-effector XYZ in metres in columns 0:3**, the complete metric is:
+Supply a motion metric that converts predicted actions into end-effector displacement in **metres**. For the public RoboTwin EEF checkpoint above, actions and raw state use **left XYZ in columns 0:3 and right XYZ in 10:13**. This metric takes the maximum displacement over both arms and all 32 predictions:
 
 ```python
 def displacement(actions, raw_proprio):
-    current_xyz = np.asarray(raw_proprio)[..., :3]
-    return float(np.linalg.norm(actions[:32, :3] - current_xyz, axis=-1).max())
+    xyz = [0, 1, 2, 10, 11, 12]
+    delta = actions[:32, xyz] - np.asarray(raw_proprio)[..., xyz]
+    return float(np.linalg.norm(delta.reshape(-1, 2, 3), axis=-1).max())
 
 model = OpenWAM(
-    "/path/to/checkpoint",
+    "assets/openwam-robotwin",
     reuse_tokens=True,
     adaptive_2f4f=True,
 )
@@ -100,7 +130,7 @@ print(model.architecture.last_stats)
 model.close()
 ```
 
-For two arms, use the maximum over both arms. Joint actions require forward kinematics; delta actions require the controller's accumulation and scaling. The metric receives the denormalized coarse prediction after the second full evaluation. Use the XYZ example only for the stated action representation.
+The metric receives the denormalized coarse prediction after the second full evaluation. Other checkpoints may use different layouts: joint actions require forward kinematics, and delta actions require the controller's accumulation and scaling. Use the XYZ example only for the stated action representation.
 
 The switches are independent: token reuse alone needs no motion callback. Adaptive refinement requires ten Euler updates and a callback returning a finite, nonnegative displacement.
 

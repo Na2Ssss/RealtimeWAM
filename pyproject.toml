@@ -9,7 +9,10 @@ description = "RealtimeWAM: parallel OpenWAM inference with optional FFN reuse a
 readme = "README.md"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}
-dependencies = ["torch>=2.7,<2.8", "numpy", "Pillow", "einops"]
+dependencies = ["torch>=2.7,<2.8", "numpy", "Pillow", "einops", "ninja"]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<9"]
 
 [project.urls]
 Repository = "https://github.com/Na2Ssss/RealtimeWAM"

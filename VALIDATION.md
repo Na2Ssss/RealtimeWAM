@@ -2,6 +2,27 @@
 
 本文记录当前 RealtimeWAM 的独立代码验证与增量测量。[RealtimeWAM 论文](https://arxiv.org/abs/2610.10079)中的主表还包含跨观测 token 复用及自适应 2F/4F，并使用闭环 rollout 平均延时；本仓库 v0.1.0 未发布完整方法和论文评测流程，因此下文约 217 ms 的数据不等于论文主表的 63.09 ms，也不对应论文某一行的已验证复现。论文使用的 OpenWAM Native 参照提交和这里的外接包参照版本也不同，详见论文附录 C.1。
 
+## 2026-10-12：从公开源码安装与运行
+
+这次检查使用匿名克隆的公开 RealtimeWAM 和 OpenWAM，新建 Python 3.10/3.11 虚拟环境，从公开包源安装依赖；关闭系统/user site-packages，没有通过 `.pth` 或 `PYTHONPATH` 借用旧环境。OpenWAM 固定在 `898e2f96c02c172f078c17ff85a055a6bbd419a2`，源码未修改。两套环境的 `pip check` 均通过；共同版本包括 PyTorch 2.7.1+cu128、Triton 3.3.1、Transformers 5.19.0、Diffusers 0.41.0 和 CUDA toolkit 12.4。
+
+完整模型资产来自公开的 [OpenWAM-Alpha-Sim-RoboTwin-Full](https://huggingface.co/OpenWAM/OpenWAM-Alpha-Sim-RoboTwin-Full/tree/04b96af53eeeb111c64631f822efcbb82f4b186e)。配置、normalizer 和 tokenizer 重新获取，并与公开 Git/LFS 哈希核对。24.8 GB 权重复用已下载的副本，重新计算的 SHA-256 为 `d07ff6f8cfb627ebf47313e65af38773fabcb3861d52fdc7c3bc5e7bee33f6fe`，与该公开 revision 的 LFS 哈希一致。
+
+Python 3.10 / A100 80 GiB 上，使用新的扩展、Triton 和 Inductor 缓存，**27 项测试全部通过**。从干净 checkout 构建的 wheel 包含 11 个 Python 模块和两份 C++ 源码，内容与源码逐文件一致。
+
+Python 3.11 / RTX 4090 48 GiB 上，完整 checkpoint 的四种组合均通过：每种连续运行三次，共 **12 次端到端调用**，每次检查返回的 32×20 动作均为有限值。加载和推理设置 `HF_HUB_OFFLINE=1`、`TRANSFORMERS_OFFLINE=1`，使用空的 Hugging Face 缓存及新建的编译缓存。
+
+| 配置 | 三次调用的完整 Transformer 计算次数 | 三次调用的 observation 刷新数 |
+| --- | --- | --- |
+| 默认并行 | 10 / 10 / 10 | 不启用跨请求复用 |
+| 并行 + token reuse | 10 / 10 / 10 | 120 / 16 / 16 |
+| 并行 + 自适应 | 2 / 2 / 4 | 不启用跨请求复用 |
+| 三项同时开启 | 2 / 2 / 4 | 120 / 16 / 16 |
+
+2F 的完整计算位置为 `(0, 3)`，4F 为 `(0, 3, 6, 9)`。示例使用人工灰图、零状态和返回 0.10 / 0.10 / 0.01 米的测试回调，验证安装、完整模型推理及路由；不代表闭环质量验证或论文性能复现。README 的双臂位移函数另以左右臂各 5 cm 的输入检查数值及状态形状。
+
+README 现包含从零安装、固定上游提交、公开权重下载和四种开关组合的命令。新增的 [examples/smoke.py](examples/smoke.py) 共 48 行，自行生成图像和该 checkpoint 所需的 20 维原始状态；双臂位移函数也完整写在 README。运行时及 benchmark 的 11 个 Python 模块和两份 C++ 文件相对 `42a8d89` 均无改动，核心仍为 10 个 Python 文件、2263 行。
+
 ## v0.3.0：RealtimeWAM 命名与三项方法的发布检查
 
 公开项目与发行包统一为 RealtimeWAM / `realtimewam`，原 `WAMInfer/` 移至 `realtimewam/`。运行时与 benchmark 共 11 个 Python 模块在统一 import 路径并排除文档字符串后，AST 与 `fec7b8f` 一致；本轮没有改变算法、数值计算或开关默认值。核心仍是 10 个 Python 文件、2263 行。
