@@ -10,10 +10,11 @@ Yuan Meng, Chenglei Wu, Jingyan Jiang, Bo Li, and Zhi Wang
 Tsinghua University · YuanxingGuangnian Robotics · Nanjing University
 
 [![Paper](https://img.shields.io/badge/arXiv-2610.10079-b31b1b.svg)](https://arxiv.org/abs/2610.10079)
+[![Project](https://img.shields.io/badge/project-page-527f93.svg)](https://na2ssss.github.io/realtimewam-project/)
 [![Code](https://img.shields.io/badge/code-RealtimeWAM-2563eb.svg)](https://github.com/Na2Ssss/RealtimeWAM)
 [![License](https://img.shields.io/badge/license-Apache--2.0-green.svg)](LICENSE)
 
-[Paper](https://arxiv.org/abs/2610.10079) · [Method](#method) · [Quick start](#quick-start) · [中文源码导读](CODE_GUIDE.md)
+[Paper](https://arxiv.org/abs/2610.10079) · [Project page](https://na2ssss.github.io/realtimewam-project/) · [Method](#method) · [Quick start](#quick-start) · [中文源码导读](CODE_GUIDE.md)
 
 </div>
 
