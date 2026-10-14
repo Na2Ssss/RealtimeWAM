@@ -15,7 +15,7 @@ dependencies = ["torch>=2.7,<2.8", "numpy", "Pillow", "einops", "ninja"]
 test = ["pytest>=8,<9"]
 
 [project.urls]
-Homepage = "https://na2ssss.github.io/realtimewam-project/"
+Homepage = "https://realtimewam.github.io/"
 Repository = "https://github.com/Na2Ssss/RealtimeWAM"
 Upstream = "https://github.com/OpenWAM-Official/OpenWAM"
 Paper = "https://arxiv.org/abs/2610.10079"
