@@ -8,7 +8,7 @@ from openwam.deploy.model_loader import load_from_checkpoint_dir
 from realtimewam.blocks import View, VideoAdapter, ActionAdapter, prepare_packed_weights
 from realtimewam.ffn import PreparedFFN
 from realtimewam.graphs import CudaGraphForward, TextEncodeGraph, VAEEncodeGraph, module_guard
-from realtimewam.joint import JointDriver, ParallelJointLoop
+from realtimewam.joint import ParallelJointLoop
 from realtimewam.preparation import ConditioningPreparation, FirstFramePreparation
 from realtimewam.approximation import TokenReuse, MotionRefinement
 
@@ -41,7 +41,6 @@ class Runtime(View):
         self.closed = False
         self.video_backbone = VideoAdapter(architecture.video_backbone)
         self.action_backbone = ActionAdapter(architecture.action_backbone)
-        self.mot_driver = JointDriver(architecture.mot_driver, self.video_backbone, self.action_backbone)
         vb = self.video_backbone
         vb.ffn = PreparedFFN(vb) if torch.cuda.get_device_capability(self.device) == (8, 9) else None
         vb.input_stream = torch.cuda.Stream(device=self.device)
@@ -99,13 +98,11 @@ class Runtime(View):
             self._inference_eval_guard = module_guard(self)
         if len(schedule) < 2:
             raise ValueError("Schedule requires at least one step.")
-        if not all((len(pair) == 2 and all((math.isfinite(float(t)) for t in pair)) for pair in schedule)):
+        if any(len(pair) != 2 or any(not math.isfinite(float(t)) for t in pair) for pair in schedule):
             raise ValueError("Schedule must contain finite video/action timestep pairs.")
         if tuple(schedule[-1]) != (0.0, 0.0):
             raise ValueError("Schedule must terminate at (0, 0).")
-        if any(
-            (not (v > vn and a > an and (vn >= 0) and (an >= 0)) for ((v, a), (vn, an)) in zip(schedule, schedule[1:]))
-        ):
+        if any(not (v > vn >= 0 and a > an >= 0) for (v, a), (vn, an) in zip(schedule, schedule[1:])):
             raise ValueError("Every step must advance both modalities; plateau/skip schedules are unsupported.")
         (vb, device, dtype) = (self.video_backbone, self.device, self.dtype)
         action_num_frames = int(num_frames if action_num_frames is None else action_num_frames)
@@ -291,29 +288,27 @@ class Runtime(View):
                 n = rows[0] // latents.shape[2]
                 rows += tuple(rows[0] - n + b for b in self.token_reuse.capacities(n))
             vb.ffn.prepare(rows)
-        self._cuda_graph_forward.reset()
-        self._action_cuda_graph_forward.reset()
-        self._first_frame_preparation.close()
-        self._residual_graphs.clear()
-        if self.token_reuse is not None:
-            self.token_reuse.reset()
+        self._clear_request_state()
         vb.dit.freqs = tuple(freq.to(device=self.device) for freq in vb.dit.freqs)
         ab._sync_rope_freqs_device()
         self._inference_module_guard = module_guard(self, track_versions=True)
         self._inference_preparation_key = key
         return inputs
 
+    def _clear_request_state(self):
+        self._cuda_graph_forward.reset()
+        self._action_cuda_graph_forward.reset()
+        self._first_frame_preparation.close()
+        self._residual_graphs.clear()
+        if self.token_reuse is not None:
+            self.token_reuse.reset()
+
     def close(self):
         with self._lock:
             if self.closed:
                 return self._native
             torch.cuda.synchronize(self.device)
-            self._cuda_graph_forward.reset()
-            self._action_cuda_graph_forward.reset()
-            self._first_frame_preparation.close()
-            self._residual_graphs.clear()
-            if self.token_reuse is not None:
-                self.token_reuse.reset()
+            self._clear_request_state()
             self._conditioning_preparation.close()
             vb = self.video_backbone
             for graph in (vb.text_graph, vb.vae_graph):
@@ -384,7 +379,8 @@ class OpenWAM:
                 shift=float(arch.action_backbone.shift_action or 5.0),
                 shift_video=float(arch.video_backbone.shift_video or 5.0),
             )
-            kwargs = dict(
+            return self.architecture.generate(
+                schedule, prompt,
                 first_frame_image=image,
                 proprio=arch.normalize_deploy_proprio(proprio),
                 seed=seed,
@@ -396,7 +392,6 @@ class OpenWAM:
                 active_action_mask=active_action_mask,
                 motion_metric=motion_metric,
             )
-            return self.architecture.generate(schedule, prompt, **kwargs)
 
     def reset(self):
         with self._lock:

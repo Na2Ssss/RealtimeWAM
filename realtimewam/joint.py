@@ -4,21 +4,16 @@ The first evaluation can publish current-frame K/V for this request's later
 evaluations. All future Video and Action tokens are always recomputed.
 """
 
+from functools import partial
 import torch
-from realtimewam.blocks import View
-from realtimewam._triton_attention import masked_attention
+from realtimewam._triton_attention import masked_attention, current_frame_attention, joint_first_frame_attention
 
 
-class _BranchPhase:
-    def __init__(self, backbone, layer, last, *, ffn=False):
-        self.backbone, self.layer, self.last = backbone, layer, last
-        self.post = backbone.ffn_at_layer_for_compile if ffn else backbone.post_attn_at_layer_for_compile
-
-    def __call__(self, state, attended, post):
-        self.post(self.layer, state, attended, post)
-        if self.layer == self.last:
-            return None
-        return self.backbone.pre_attn_at_layer_for_compile(self.layer + 1, state)
+def _branch_phase(backbone, layer, last, state, attended, post, *, ffn=False):
+    finish = backbone.ffn_at_layer_for_compile if ffn else backbone.post_attn_at_layer_for_compile
+    finish(layer, state, attended, post)
+    if layer != last:
+        return backbone.pre_attn_at_layer_for_compile(layer + 1, state)
 
 
 class ParallelJointLoop:
@@ -26,7 +21,8 @@ class ParallelJointLoop:
 
     def __init__(self, arch):
         self.driver = arch.mot_driver
-        self.video_backbone = self.driver.vb
+        self.video_backbone = vb = arch.video_backbone
+        ab = arch.action_backbone
         self.first_frame_tokens = 0
         self.structured_attention = torch.cuda.get_device_capability(arch.device) in ((8, 0), (8, 9))
         self.stream = torch.cuda.Stream(device=arch.device)
@@ -35,52 +31,33 @@ class ParallelJointLoop:
             # Tune complete fused phases, including GEMM epilogues. Ada request
             # measurements favor this over tuning isolated linear operators.
             kwargs["options"] = dict(kwargs.get("options", {}), max_autotune=True)
-        self.video_first = torch.compile(self._video_first, **kwargs)
-        self.action_first = torch.compile(self._action_first, **kwargs)
+        self.video_first = torch.compile(partial(vb.pre_attn_at_layer_for_compile, 0), **kwargs)
+        self.action_first = torch.compile(partial(ab.pre_attn_at_layer_for_compile, 0), **kwargs)
         self.attention = torch.compile(self._attention, **kwargs)
         self.video_post = torch.compile(self.video_backbone.post_attn_at_layer_for_compile, **kwargs)
         last = self.driver.num_layers - 1
         self.video = [
-            torch.compile(_BranchPhase(self.video_backbone, i, last, ffn=True).__call__, **kwargs) for i in range(last + 1)
+            torch.compile(partial(_branch_phase, vb, i, last, ffn=True), **kwargs) for i in range(last + 1)
         ]
-        self.action = [torch.compile(_BranchPhase(self.driver.ab, i, last).__call__, **kwargs) for i in range(last + 1)]
-
-    def _video_first(self, state):
-        return self.video_backbone.pre_attn_at_layer_for_compile(0, state)
-
-    def _action_first(self, state):
-        return self.driver.ab.pre_attn_at_layer_for_compile(0, state)
+        self.action = [torch.compile(partial(_branch_phase, ab, i, last), **kwargs) for i in range(last + 1)]
 
     def _attention(self, qv, qa, kv, ka, vv, va, mask, prefix=None):
         video_count, action_count = qv.shape[1], qa.shape[1]
-        if prefix is not None:
-            ck, cv = prefix
-            if self.structured_attention and mask is None:
-                from realtimewam._triton_attention import current_frame_attention
-
-                return current_frame_attention(qv, qa, ck, kv, ka, cv, vv, va, self.driver.num_heads)
-            result = self.driver._mixed_attention(
-                torch.cat((qv, qa), dim=1), torch.cat((ck, kv, ka), dim=1), torch.cat((cv, vv, va), dim=1), mask
-            )
-        elif (
-            self.structured_attention
+        heads = self.driver.num_heads
+        if prefix is not None and self.structured_attention and mask is None:
+            return current_frame_attention(qv, qa, prefix[0], kv, ka, prefix[1], vv, va, heads)
+        q = torch.cat((qv, qa), dim=1)
+        k = torch.cat((kv, ka) if prefix is None else (prefix[0], kv, ka), dim=1)
+        v = torch.cat((vv, va) if prefix is None else (prefix[1], vv, va), dim=1)
+        if (
+            prefix is None
+            and self.structured_attention
             and self.driver.attention_mask_mode == "mutual"
             and self.driver.vb.video_attention_mask_mode == "first_frame_causal"
         ):
-            from realtimewam._triton_attention import joint_first_frame_attention
-
-            result = joint_first_frame_attention(
-                torch.cat((qv, qa), dim=1),
-                torch.cat((kv, ka), dim=1),
-                torch.cat((vv, va), dim=1),
-                video_count,
-                self.first_frame_tokens,
-                self.driver.num_heads,
-            )
+            result = joint_first_frame_attention(q, k, v, video_count, self.first_frame_tokens, heads)
         else:
-            result = self.driver._mixed_attention(
-                torch.cat((qv, qa), dim=1), torch.cat((kv, ka), dim=1), torch.cat((vv, va), dim=1), mask
-            )
+            result = masked_attention(q, k, v, mask, heads)
         video, action = result.split((video_count, action_count), dim=1)
         return video.contiguous(), action.contiguous()
 
@@ -154,12 +131,3 @@ class ParallelJointLoop:
                 video_state.hidden_states[:, : self.first_frame_tokens].contiguous(),
             )
         return video_state, action_state
-
-
-class JointDriver(View):
-    def __init__(self, native, video, action):
-        super().__init__(native)
-        self.vb, self.ab = video, action
-
-    def _mixed_attention(self, q, k, v, mask):
-        return masked_attention(q, k, v, mask, self.num_heads)

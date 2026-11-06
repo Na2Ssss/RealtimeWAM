@@ -1,4 +1,4 @@
-# 沿着一次推理读懂 2263 行代码
+# 沿着一次推理读懂代码
 
 这是 [RealtimeWAM 论文](https://arxiv.org/abs/2610.10079)的 OpenWAM 外接实现。Parallel 始终启用，`reuse_tokens` 和 `adaptive_2f4f` 是两个独立、默认关闭的有损开关。没有额外 baseline 模式；FastWAM 和完整论文评测入口尚未包含。
 
@@ -8,21 +8,20 @@
 
 ## 文件地图
 
-| 文件 | 行数 | 负责的事情 | 先看哪里 |
-| --- | ---: | --- | --- |
-| [`runtime.py`](realtimewam/runtime.py) | 407 | 接口、采样循环、准备与释放资源 | `OpenWAM.generate`、`Runtime._generate` |
-| [`preparation.py`](realtimewam/preparation.py) | 214 | 图像/文本准备、条件 K/V、时间调制、当前帧 prefill | `prepare_inputs`、`ConditioningPreparation` |
-| [`blocks.py`](realtimewam/blocks.py) | 292 | 适配原模型，将每层拆成可调度的阶段 | `View`、两个 Adapter |
-| [`approximation.py`](realtimewam/approximation.py) | 92 | token 预算与历史、运动自适应决策 | `TokenReuse`、`MotionRefinement` |
-| [`joint.py`](realtimewam/joint.py) | 165 | Video/Action 双 stream 调度、联合 attention | `ParallelJointLoop._run` |
-| [`graphs.py`](realtimewam/graphs.py) | 257 | CUDA Graph、输入刷新、文本和 VAE 执行 | `CudaGraphForward._replay` |
-| [`ffn.py`](realtimewam/ffn.py) | 118 | 准备 FFN 权重布局和 cuBLASLt 执行计划 | `PreparedFFN.prepare/forward` |
-| [`_triton_inference.py`](realtimewam/_triton_inference.py) | 229 | 融合归一化、调制、残差和 RoPE | `_modulated_norm`、`_qk_rms_rope_kernel` |
-| [`_triton_attention.py`](realtimewam/_triton_attention.py) | 484 | 不同 mask/缓存布局的 attention kernel | `_attention_kernel`、`_split_attention_kernel` |
-| [`__init__.py`](realtimewam/__init__.py) | 5 | 导出 `OpenWAM` 和 `accelerate` | 整个文件 |
-| **核心 Python 合计** | **2263** | 包括注释和空行 | |
+| 文件 | 负责的事情 | 先看哪里 |
+| --- | --- | --- |
+| [`runtime.py`](realtimewam/runtime.py) | 接口、采样循环、准备与释放资源 | `OpenWAM.generate`、`Runtime._generate` |
+| [`preparation.py`](realtimewam/preparation.py) | 输入准备、条件 K/V、时间调制、当前帧 prefill | `prepare_inputs`、`ConditioningPreparation` |
+| [`blocks.py`](realtimewam/blocks.py) | 适配原模型，将每层拆成可调度的阶段 | `View`、两个 Adapter |
+| [`approximation.py`](realtimewam/approximation.py) | token 预算与历史、运动自适应决策 | `TokenReuse`、`MotionRefinement` |
+| [`joint.py`](realtimewam/joint.py) | Video/Action 双 stream 调度、联合 attention | `ParallelJointLoop._run` |
+| [`graphs.py`](realtimewam/graphs.py) | CUDA Graph、输入刷新、文本和 VAE 执行 | `CudaGraphForward._replay`、`TextEncodeGraph.encode_prompt` |
+| [`ffn.py`](realtimewam/ffn.py) | 准备 FFN 权重布局和 cuBLASLt 执行计划 | `PreparedFFN.prepare/forward` |
+| [`_triton_inference.py`](realtimewam/_triton_inference.py) | 融合归一化、调制、残差和 RoPE | `_modulated_norm`、`_qk_rms_rope_kernel` |
+| [`_triton_attention.py`](realtimewam/_triton_attention.py) | 不同 mask/缓存布局的 attention kernel | `_attention_kernel`、`_split_attention_kernel` |
+| [`__init__.py`](realtimewam/__init__.py) | 导出 `OpenWAM` 和 `accelerate` | 整个文件 |
 
-另外还有 `_cublaslt_inference.cpp` 197 行、`_inference_guards.cpp` 214 行。benchmark 和测试不计入核心行数。两个开关及后续缓存优化相对 v0.1.0 净增 242 行核心 Python，只增加一个实现文件。
+两份 C++ 扩展分别负责 cuBLASLt FFN 执行计划（`_cublaslt_inference.cpp`）和缓存失效检查（`_inference_guards.cpp`）。
 
 ## 1. 入口：接入原模型
 
@@ -102,7 +101,7 @@ flowchart TD
 
 为什么先完成 Video 的投影，再启动 Action？测量发现，Action 与这些较小的 Video 投影一起运行时，Video 会变慢。把重叠窗口移到 Video FFN，虽然 FFN 自身也可能变慢，但整个关键路径更短。
 
-`_BranchPhase` 把“本层剩余计算”和“下一层 Q/K/V 准备”合成一个可编译阶段。**这里的 phase 不等于单独一层，也不等于一个 GPU kernel。** 一个 phase 内仍可能启动多个 kernel。
+`_branch_phase` 把“本层剩余计算”和“下一层 Q/K/V 准备”合成一个可编译函数。调度器直接调用 attention kernel，上游 driver 只提供 mask 和层配置。**这里的 phase 不等于单独一层，也不等于一个 GPU kernel。** 一个 phase 内仍可能启动多个 kernel。
 
 ## 6. blocks.py：把模型拆成可执行阶段
 
@@ -136,7 +135,7 @@ flowchart TD
 
 ## 8. 真正手写的 GPU 算子
 
-两个 `_triton_*.py` 文件共 **705 行**。这些代码通过 Triton 编译为 GPU kernel。内部调用方负责提供满足既有 CUDA BF16、形状和布局约定的张量；原先只报错的重复参数检查已删除，kernel 数学和启动配置不变。
+两个 `_triton_*.py` 文件通过 Triton 编译为 GPU kernel。内部调用方负责提供满足 CUDA BF16、形状和布局约定的张量。
 
 `_triton_inference.py` 处理偏逐元素/归一化的计算：Q/K RMSNorm 与 RoPE 融合，以及残差、门控、LayerNorm 和时间调制融合。减少 kernel 启动和中间结果往返显存是主要目的。BF16 舍入位置被明确保留，RoPE 的相关旋转使用 FP64；不能为快一点直接降低精度。
 
@@ -152,7 +151,7 @@ FFN 的主体是两次大矩阵乘，中间经过 GELU。这里在 Ada 上使用
 
 另一个 C++ 文件 `_inference_guards.cpp` 运行在 CPU，快速检查模型状态和输入结构，帮助判断何时必须刷新权重/缓存或重新捕获。两份 C++ 扩展都不是手写 PTX；真正的 GPU GEMM 来自 cuBLASLt。
 
-这里的 guard 参与结果正确性：更换权重后要刷新打包权重和条件缓存，输入形状或布局变化后要重建 Graph。`graphs.py` 还检查 Tensor 版本，以发现同一对象的原地修改。这些逻辑继续保留，不能像只负责报错的内部参数检查一样直接删除。
+这里的 guard 参与结果正确性：更换权重后要刷新打包权重和条件缓存，输入形状或布局变化后要重建 Graph。`graphs.py` 还检查 Tensor 版本，以发现同一对象的原地修改。
 
 因此本仓库同时使用 **PyTorch、Triton、cuBLASLt、CUDA Stream 和 CUDA Graph**。它们处在执行链的不同位置；这里没有 CuTe、TileLang 或 cuTile 实现。
 
@@ -168,7 +167,7 @@ FFN 的主体是两次大矩阵乘，中间经过 GELU。这里在 Ada 上使用
 
 `reuse_tokens=True` 省的是**不同观测之间部分当前帧 token 的 FFN**。第一层完整计算；RGB 变化超过 5/255 的位置必须刷新。所需数量为 `必选数 + ceil(reserve_fraction × 其余位置数)`，默认 `reserve_fraction=0`，向上取默认容量 **16/80/120**。这对应论文 [Figure 6 / 附录 E.3](https://arxiv.org/html/2610.10079v1#A5.SS3) 的在线档位及配套评测配置；[附录 C.4](https://arxiv.org/html/2610.10079v1#A3.SS4) 的固定 80-token profiling 则使用 `(80,120)` 和零预留。
 
-剩余名额用第一层特征的对称相对 L1 变化排序填满，分母下限为 `1e-12`，分数相同时按位置顺序决定。**80 是刷新 80、复用 40**，不是复用 80。后续层把选中的当前帧行与所有未来帧行一起送进 FFN，再把结果写回缓存。没有选中的位置保留上次 FFN 输出；attention 和本次残差门控继续重算。旧版本默认的 32/64/96/120 与 25% 预留已替换，开启近似开关时不能要求新旧策略输出逐位相同。
+剩余名额用第一层特征的对称相对 L1 变化排序填满，分母下限为 `1e-12`，分数相同时按位置顺序决定。**80 是刷新 80、复用 40**，不是复用 80。后续层把选中的当前帧行与所有未来帧行一起送进 FFN，再把结果写回缓存。没有选中的位置保留上次 FFN 输出；attention 和本次残差门控继续重算。
 
 FFN 输入的归一化直接将选中行写入紧凑缓冲区，省去逐层 gather；所有行的当前 residual 仍完整写出。首层选择时建立一次位置映射，后续层按该映射合并旧缓存与新 FFN 输出，编译器将拼接和读取融合。这个执行调整不改变选中的位置、FFN 算法或舍入顺序。
 
@@ -183,5 +182,3 @@ FFN 输入的归一化直接将选中行写入紧凑缓冲区，省去逐层 gat
 ## 建议阅读顺序
 
 先读 `runtime.py` 的 `_generate`，明确 10 步循环；再读 `joint.py` 的 `_run`，看每层哪里分叉、哪里会合。接着读 `blocks.py` 理解各阶段的输入输出，再看 `preparation.py` 与 `graphs.py` 的缓存生命周期。最后深入 Triton 和 FFN 实现。
-
-最近增量优化的逐字节一致性基准是固定 FFN 的已有 Parallel。历史融合相对原生 eager 的数值边界、性能测量条件和被排除方案见 [验证记录](VALIDATION.md)。

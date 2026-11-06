@@ -183,11 +183,11 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python -m pytest \
   -c realtimewam/pytest.ini realtimewam/tests -q -p no:cacheprovider
 ```
 
-See [VALIDATION.md](VALIDATION.md) for numerical checks and timing protocols, and [CODE_GUIDE.md](CODE_GUIDE.md) for a walkthrough of the **10 core Python files**. Detailed measurements are kept outside this README.
+See [CODE_GUIDE.md](CODE_GUIDE.md) for a walkthrough of the **10 core Python files**.
 
 ## Migration from WAMInfer
 
-The project is now **RealtimeWAM**, with Python imports under `realtimewam`. Update `from WAMInfer import ...` to `from realtimewam import ...`, and CLI calls to `python -m realtimewam.benchmark`. Older tags retain the original package name. Historical evidence files retain their original source hashes.
+The project is now **RealtimeWAM**, with Python imports under `realtimewam`. Update `from WAMInfer import ...` to `from realtimewam import ...`, and CLI calls to `python -m realtimewam.benchmark`. Older tags retain the original package name.
 
 ## Citation
 

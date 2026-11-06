@@ -158,22 +158,21 @@ class TextEncodeGraph:
 
     @torch.no_grad()
     def encode_prompt(self, prompt, tokenizer, device):
-        from realtimewam.preparation import encode_text
-
         self._check_encoder()
         key = (prompt, id(tokenizer), torch.device(device))
         if key != self.prompt_key:
-            self.prompt_value = encode_text(prompt, tokenizer=tokenizer, graph=self, device=device)
+            ids, mask = tokenizer(
+                [prompt], return_mask=True, add_special_tokens=True, max_length=512, padding="max_length", truncation=True
+            )
+            length = int(mask.gt(0).sum(dim=1).max())
+            bucket = next(size for size in (32, 64, 128, 256, 512) if size >= length)
+            context, lengths = self.graph(ids.to(device), mask.to(device))
+            self.prompt_value = context[:, :bucket].contiguous(), lengths
             self.prompt_key = key
             self.misses += 1
         else:
             self.hits += 1
         return self.prompt_value
-
-    @torch.no_grad()
-    def __call__(self, ids, mask):
-        self._check_encoder()
-        return self.graph(ids, mask)
 
 
 def _first_frame_conv(module, x, cache_x=None):
