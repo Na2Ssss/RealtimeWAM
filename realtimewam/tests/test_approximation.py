@@ -116,8 +116,6 @@ def test_reuse_executes_compact_ffn_with_current_gates():
 @pytest.mark.parametrize("reuse_tokens,adaptive", [(False, True), (True, False), (True, True)])
 @torch.no_grad()
 def test_switches_graph_replay_and_history(monkeypatch, reuse_tokens, adaptive):
-    from torch.utils._pytree import tree_unflatten
-
     fast = accelerate(
         make_arch("cuda", torch.bfloat16, head_dim=128),
         reuse_tokens=reuse_tokens,
@@ -220,20 +218,6 @@ def test_switches_graph_replay_and_history(monkeypatch, reuse_tokens, adaptive):
             np.testing.assert_array_equal(coarse_actions[-2], coarse_actions[-1])
         else:
             np.testing.assert_array_equal(coarse_actions[0], coarse_actions[1])
-        graph = fast._residual_graphs[False]
-        args, kwargs = tree_unflatten(graph.inputs, graph.signature[0])
-        expected = fast._forward_impl(*args, **kwargs)
-
-        def forbidden(*args):
-            raise AssertionError("Cached residual steps must not enter the Transformer")
-
-        monkeypatch.setattr(fast, "_compiled_mot_run_joint_loop", forbidden)
-        actual = fast._forward_impl(*args, **kwargs)
-        for a, b in zip(actual, expected):
-            torch.testing.assert_close(a, b, atol=0, rtol=0)
-        # Heads depend on the CURRENT latent; cached velocities would fail this.
-        changed = fast._forward_impl(args[0] + 1, **kwargs)
-        assert not torch.equal(changed[1], actual[1])
     fast.close()
 
 
@@ -289,3 +273,78 @@ def test_paper_relative_feature_score_at_small_magnitudes():
     state = SimpleNamespace(extras=dict(token_reuse=reuse))
     select_tokens(state, current)
     assert state.extras["token_indices"].tolist() == [0, 4, 5]
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("decode_video", [False, True])
+@torch.no_grad()
+def test_adaptive_velocity_reuse_holds_post_head_predictions(monkeypatch, decode_video):
+    runtime = accelerate(
+        make_arch("cuda", torch.bfloat16, head_dim=128),
+        reuse_tokens=True,
+        adaptive_2f4f=True,
+        refresh_buckets=(1, 4),
+    )
+    inputs = make_inputs(runtime)
+    monkeypatch.setattr(runtime.video_backbone, "preprocess_input_for_inference", lambda **kw: dict(inputs))
+    monkeypatch.setattr(runtime.video_backbone._native, "decode_video", lambda latents, **kw: latents)
+    image = np.zeros((8, 8, 3), dtype=np.uint8)
+    schedule = [(value, value) for value in (1000., 910., 800., 680., 570., 490., 350., 240., 140., 60., 0.)]
+    fresh, used = [], []
+    coarse_predictions = []
+    forward, run_first = runtime.forward, runtime._first_frame_preparation.run_first
+    advance = runtime.action_scheduler.flow_step
+
+    def record(call):
+        def run(*args, **kwargs):
+            assert "_inference_residual" not in kwargs and "_inference_record_residual" not in kwargs
+            predictions = call(*args, **kwargs)
+            fresh.append((len(used), *[None if value is None else value.clone() for value in predictions[:2]]))
+            return predictions
+        return run
+
+    def step(velocity, sigma, sigma_next, sample):
+        used.append(velocity.clone())
+        return advance(velocity, sigma, sigma_next, sample)
+
+    monkeypatch.setattr(runtime, "forward", record(forward))
+    monkeypatch.setattr(runtime._first_frame_preparation, "run_first", record(run_first))
+    monkeypatch.setattr(runtime.action_scheduler, "flow_step", step)
+    try:
+        for motion, expected_steps in ((0.10, (0, 3)), (0.04, (0, 3, 6, 9)), (0.10, (0, 3)), (0.04, (0, 3, 6, 9))):
+            runtime.reset()
+            fresh.clear()
+            used.clear()
+
+            def metric(actions):
+                coarse_predictions.append(actions.copy())
+                return motion
+
+            result = runtime.generate(
+                schedule, "task", first_frame_image=image, proprio=inputs["proprio"],
+                action_num_frames=4, decode_video=decode_video, motion_metric=metric,
+            )
+            assert tuple(entry[0] for entry in fresh) == expected_steps
+            assert runtime.last_stats["full_evaluations"] == expected_steps
+            assert len(used) == 10
+            latents = inputs["latents"].clone()
+            actions = torch.randn(1, 3, runtime.action_dim, device=runtime.device, dtype=runtime.dtype,
+                                  generator=torch.Generator(device=runtime.device).manual_seed(42))
+            for step_index, velocity in enumerate(used):
+                _, video, action = next(entry for entry in reversed(fresh) if entry[0] <= step_index)
+                torch.testing.assert_close(velocity, action, rtol=0, atol=0)
+                if video is not None:
+                    latents = latents + video * ((schedule[step_index + 1][0] - schedule[step_index][0]) / 1000)
+                latents[:, :, :1] = inputs["first_frame_latents"]
+                actions = advance(action, schedule[step_index][1] / 1000,
+                                  schedule[step_index + 1][1] / 1000, actions)
+            np.testing.assert_array_equal(result["actions"], runtime._decode_actions(actions))
+            if decode_video:
+                torch.testing.assert_close(result["video"], latents, rtol=0, atol=0)
+            else:
+                assert result["video"] is None
+        for coarse in coarse_predictions[1:]:
+            np.testing.assert_array_equal(coarse_predictions[0], coarse)
+    finally:
+        runtime.close()

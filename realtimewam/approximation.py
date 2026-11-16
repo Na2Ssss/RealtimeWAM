@@ -1,4 +1,4 @@
-"""Optional observation FFN reuse and motion-adaptive residual refresh."""
+"""Optional observation FFN reuse and motion-adaptive velocity refresh."""
 
 import math
 import numpy as np
@@ -80,7 +80,7 @@ class MotionRefinement:
         if metric is None or len(schedule) != 11:
             raise ValueError("adaptive_2f4f requires 10 Euler updates and a motion_metric returning metres")
         self.metric, self.threshold = metric, threshold
-        self.nfe, self.amplitude, self.residual = 2, None, None
+        self.nfe, self.amplitude = 2, None
 
     def full(self, index):
         return index in (0, 3) or (self.nfe == 4 and index in (6, 9))

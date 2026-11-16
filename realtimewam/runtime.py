@@ -56,7 +56,6 @@ class Runtime(View):
         self._inference_eval_guard = self._inference_module_guard = None
         self.token_reuse = TokenReuse(refresh_buckets, reserve_fraction) if reuse_tokens else None
         self.adaptive_2f4f, self.motion_threshold = adaptive_2f4f, motion_threshold
-        self._residual_graphs = {}
         self.last_stats = {}
 
     def reset(self):
@@ -152,32 +151,27 @@ class Runtime(View):
         train_v = float(self.video_scheduler.num_train_timesteps)
         train_a = float(self.action_scheduler.num_train_timesteps)
         full_steps = []
+        cached_velocity = None
         for index, ((tv, ta), (tv_next, ta_next)) in enumerate(zip(schedule, schedule[1:])):
-            torch.compiler.cudagraph_mark_step_begin()
-            forward_inputs = conditioning.step_inputs(inputs, index)
             fresh = refinement is None or refinement.full(index)
             if fresh:
                 full_steps.append(index)
-            if refinement is not None:
-                if fresh:
-                    forward_inputs["_inference_record_residual"] = index != 9 or decode_video
+                torch.compiler.cudagraph_mark_step_begin()
+                forward_inputs = conditioning.step_inputs(inputs, index)
+                if first_frame is not None and index == 0:
+                    if reuse is not None:
+                        forward_inputs["_inference_token_reuse"] = reuse
+                    result = first_frame.run_first(action_latents, **forward_inputs)
+                    inputs["_inference_first_frame"] = result[2]
+                    if reuse is not None:
+                        features, cache = result[3:5]
                 else:
-                    forward_inputs["_inference_residual"] = refinement.residual
-            if first_frame is not None and index == 0:
-                if reuse is not None:
-                    forward_inputs["_inference_token_reuse"] = reuse
-                result = first_frame.run_first(action_latents, **forward_inputs)
-                inputs["_inference_first_frame"] = result[2]
-                if reuse is not None:
-                    features, cache = result[3:5]
-            else:
-                if not decode_video and index == len(schedule) - 2:
-                    forward_inputs["_inference_action_only"] = True
-                result = self.forward(action_latents, **forward_inputs)
-            video_prediction, action_prediction = result[:2]
+                    if not decode_video and index == len(schedule) - 2:
+                        forward_inputs["_inference_action_only"] = True
+                    result = self.forward(action_latents, **forward_inputs)
+                cached_velocity = result[:2]
+            video_prediction, action_prediction = cached_velocity
             if refinement is not None and fresh:
-                if index != 9:
-                    refinement.residual = result[-1]
                 if index == 3:
                     clean = action_latents.float() - (ta / train_a) * action_prediction.float()
                     if inactive is not None:
@@ -189,7 +183,7 @@ class Runtime(View):
                     inputs["latents"] = inputs["latents"].clone()
                     inputs["latents"][:, :, : reference.shape[2]] = reference
             if action_prediction is None:
-                raise RuntimeError("The joint model must produce fresh Action predictions at every step.")
+                raise RuntimeError("The joint model must produce an Action velocity prediction.")
             if inactive is not None and inactive_noise is None:
                 inactive_noise = action_latents[..., inactive].detach().clone() / (ta / train_a)
             action_latents = self.action_scheduler.flow_step(
@@ -215,11 +209,6 @@ class Runtime(View):
         return actions
 
     def forward(self, noisy_actions, **pipeline_inputs):
-        if "_inference_residual" in pipeline_inputs:
-            key = pipeline_inputs.get("_inference_action_only", False)
-            if key not in self._residual_graphs:
-                self._residual_graphs[key] = CudaGraphForward(self._forward_impl, reuse_unchanged_inputs=True)
-            return self._residual_graphs[key](noisy_actions, **pipeline_inputs)
         graph = (
             self._action_cuda_graph_forward
             if pipeline_inputs.pop("_inference_action_only", False)
@@ -242,25 +231,13 @@ class Runtime(View):
         reuse = inputs.get("_inference_token_reuse")
         if reuse is not None:
             vstate.extras.update(token_reuse=reuse, token_outputs=[])
-        before_v, before_a = vstate.hidden_states, astate.x_action
-        prefix = inputs.get("_inference_first_frame")
-        clean = prefix[1].shape[1] if prefix is not None else 0
-        residual = inputs.get("_inference_residual")
-        if residual is None:
-            (vstate, astate) = self._compiled_mot_run_joint_loop(vstate, astate)
-        else:
-            future = before_v[:, clean:] + residual[0]
-            vstate.hidden_states = torch.cat((prefix[1], future), dim=1) if prefix is not None else future
-            astate.x_action = before_a + residual[1]
+        (vstate, astate) = self._compiled_mot_run_joint_loop(vstate, astate)
         result = (None if vstate.extras["action_only"] else vb.finalize(vstate), ab.extract_prediction(astate))
         if vstate.extras["record_first_frame"]:
             bank = vstate.extras["first_frame_result"]
-            clean = bank[1].shape[1]
             result += (bank,)
         if reuse is not None:
             result += (vstate.extras["token_features"], torch.stack(vstate.extras["token_outputs"]))
-        if inputs.get("_inference_record_residual", False):
-            result += ((vstate.hidden_states[:, clean:] - before_v[:, clean:], astate.x_action - before_a),)
         return result
 
     def prepare_inference_inputs(self, inputs):
@@ -299,7 +276,6 @@ class Runtime(View):
         self._cuda_graph_forward.reset()
         self._action_cuda_graph_forward.reset()
         self._first_frame_preparation.close()
-        self._residual_graphs.clear()
         if self.token_reuse is not None:
             self.token_reuse.reset()
 
